@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Python
+.conda/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Runtime output
+controller_simulation.csv
+controller.csv
+*.log
+
+# Editor files
+.vscode/
+.idea/
+
+# Local configuration overrides and secrets
+config.local.toml
+.env

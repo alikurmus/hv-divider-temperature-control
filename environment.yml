@@ -1,0 +1,14 @@
+name: hv-divider-pid
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - ipykernel
+  - jupyterlab
+  - matplotlib
+  - numpy
+  - python=3.11
+  - pip
+  - ipywidgets
+  - ipympl
+prefix: /Users/ali/opt/miniforge3/envs/hv-divider-pid

@@ -1,0 +1,24 @@
+[Unit]
+Description=HV Divider Standalone Temperature Controller
+After=multi-user.target
+
+[Service]
+Type=simple
+User=pidbox
+Group=pidbox
+SupplementaryGroups=gpio spi i2c
+WorkingDirectory=/opt/hv-divider-pid
+ExecStart=/opt/hv-divider-pid/conda-env/bin/python /opt/hv-divider-pid/standalone_hv_divider_pid.py --config /etc/hv-divider-pid/config.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# Hardening that still permits GPIO/SPI/I2C and log writing.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/hv-divider-pid
+
+[Install]
+WantedBy=multi-user.target

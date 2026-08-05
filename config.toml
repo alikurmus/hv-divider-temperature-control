@@ -1,0 +1,94 @@
+[control]
+# Required operating point
+setpoint_c = 28.0
+period_s = 1.0
+
+# Conservative starting PI gains. These MUST be tuned on the assembled box.
+# The output of the controller is requested heater power in watts.
+kp_w_per_c = 1.0
+ki_w_per_c_s = 0.002
+kd_w_s_per_c = 0.0
+power_bias_w = 0.0
+
+# Example values for a nominal 24 V, 25 W resistive heater:
+# R = V^2/P = 23.04 ohm, I_full = P/V = 1.042 A.
+max_power_w = 25.0
+max_current_a = 1.05
+heater_resistance_ohm = 23.04
+current_slew_a_per_s = 0.05
+
+# Filtering used by the controller. Raw and filtered temperatures are both logged.
+temperature_filter_tau_s = 5.0
+derivative_filter_tau_s = 10.0
+integral_limit_c_s = 5000.0
+
+# Software safety limits. Use an independent hardware thermostat too.
+overtemperature_c = 31.0
+minimum_valid_temperature_c = -20.0
+maximum_valid_temperature_c = 60.0
+sensor_timeout_s = 5.0
+startup_valid_samples = 5
+
+# Ripple is reported as rolling peak-to-peak temperature over this window.
+ripple_window_s = 600.0
+ripple_requirement_c = 0.10
+stable_error_band_c = 0.05
+
+# Determine these by comparison against a calibrated thermometer near 28 C.
+temperature_calibration_slope = 1.0
+temperature_calibration_offset_c = 0.0
+
+[hardware]
+# Use "simulate" first. Use "dac" for an MCP4725 command into an external
+# analog current driver. Use "scpi" for a programmable current supply.
+mode = "simulate"
+
+# MAX31865 + PT100. Four-wire is recommended for the <0.1 C ripple goal.
+rtd_cs_pin = "D5"
+rtd_wires = 4
+rtd_nominal_ohm = 100.0
+rtd_reference_ohm = 430.0
+rtd_samples_per_read = 5
+rtd_sample_spacing_s = 0.05
+
+# MCP4725 DAC. 0-3.3 V maps to 0-current_driver_full_scale_a.
+# The DAC cannot power the heater; it commands a separate current driver.
+dac_i2c_address = 0x60
+current_driver_full_scale_a = 1.05
+
+# Optional high-side current, voltage, and power readback.
+use_ina260 = true
+ina260_i2c_address = 0x40
+
+# Normally-off heater enable and always-on circulation fan.
+output_enable_gpio = 17
+fan_enable_gpio = 27
+enable_active_high = true
+fan_active_high = true
+
+# Optional panel display.
+use_lcd = true
+lcd_i2c_address = 0x27
+lcd_columns = 20
+lcd_rows = 4
+
+# Generic programmable-supply configuration for hardware.mode="scpi".
+# Replace all strings with commands from the selected supply manual.
+visa_resource = ""
+scpi_set_current = "SOUR:CURR {value:.6f}"
+scpi_output_on = "OUTP ON"
+scpi_output_off = "OUTP OFF"
+scpi_measure_current = "MEAS:CURR?"
+scpi_measure_voltage = "MEAS:VOLT?"
+scpi_timeout_ms = 2000
+
+[logging]
+csv_path = "/var/log/hv-divider-pid/controller.csv"
+log_level = "INFO"
+
+[simulation]
+ambient_c = 22.0
+initial_temperature_c = 22.0
+thermal_capacitance_j_per_c = 3000.0
+thermal_conductance_w_per_c = 0.60
+sensor_noise_std_c = 0.005
