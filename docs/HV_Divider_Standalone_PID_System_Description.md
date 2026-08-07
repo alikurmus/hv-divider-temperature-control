@@ -64,41 +64,35 @@ The original cryogenic-cavity code commands current directly. That interface can
 
 For a resistive heater:
 
-\[
+\begin{equation}
 P = I^2 R
-\]
+\end{equation}
 
 where:
 
-- \(P\) is heater power in watts
-- \(I\) is heater current in amperes
-- \(R\) is heater resistance in ohms
+- $P$ is heater power in watts
+- $I$ is heater current in amperes
+- $R$ is heater resistance in ohms
 
 The controller first calculates the desired heater power:
 
-\[
+\begin{equation}
 P_{\rm command}
-=
-K_P e
-+
-K_I \int e\,dt
--
-K_D \frac{dT}{dt}
-\]
+= K_P e + K_I \int e\,dt - K_D \frac{dT}{dt}
+\end{equation}
 
 where:
 
-\[
+\begin{equation}
 e = T_{\rm set} - T_{\rm measured}.
-\]
+\end{equation}
 
 The desired current is then:
 
-\[
+\begin{equation}
 I_{\rm command}
-=
-\sqrt{\frac{P_{\rm command}}{R_{\rm heater}}}.
-\]
+= \sqrt{\frac{P_{\rm command}}{R_{\rm heater}}}.
+\end{equation}
 
 This makes the controller more physically meaningful because heater current does not produce heat linearly. Doubling current produces four times as much resistive heating.
 
@@ -141,23 +135,23 @@ A reasonable starting heater is:
 
 The resistance is:
 
-\[
+\begin{equation}
 R = \frac{V^2}{P}
 =
 \frac{24^2}{25}
 =
 23.04\ \Omega.
-\]
+\end{equation}
 
 The full-power current is:
 
-\[
+\begin{equation}
 I = \frac{P}{V}
 =
 \frac{25}{24}
 =
 1.04\ \mathrm{A}.
-\]
+\end{equation}
 
 Example operating points are:
 
@@ -233,15 +227,15 @@ A DAC such as an MCP4725 may generate the analog command signal, but the DAC can
 
 The actual power should be calculated from measured voltage and current:
 
-\[
+\begin{equation}
 P_{\rm measured}=V_{\rm measured}I_{\rm measured}.
-\]
+\end{equation}
 
 If voltage readback is unavailable, power can be estimated using:
 
-\[
+\begin{equation}
 P_{\rm estimated}=I_{\rm measured}^2R_{\rm heater}.
-\]
+\end{equation}
 
 The display and log should preferably show:
 
@@ -260,29 +254,29 @@ A current/voltage monitor such as an INA260 may be used when an external analog 
 
 A PT100 is a platinum resistance thermometer with a nominal resistance of:
 
-\[
+\begin{equation}
 R(0^\circ\mathrm{C})=100\ \Omega.
-\]
+\end{equation}
 
 Its resistance increases with temperature.
 
 Near room temperature, the standard relation is approximately:
 
-\[
+\begin{equation}
 R(T)=R_0(1+AT+BT^2),
-\]
+\end{equation}
 
 where:
 
-- \(R_0=100\ \Omega\)
-- \(A=3.9083\times10^{-3}\ ^\circ\mathrm{C}^{-1}\)
-- \(B=-5.775\times10^{-7}\ ^\circ\mathrm{C}^{-2}\)
+- $R_0=100\ \Omega$
+- $A=3.9083\times10^{-3}\ ^\circ\mathrm{C}^{-1}$
+- $B=-5.775\times10^{-7}\ ^\circ\mathrm{C}^{-2}$
 
 At 28 °C, the PT100 resistance is approximately:
 
-\[
+\begin{equation}
 R(28^\circ\mathrm{C})\approx110.90\ \Omega.
-\]
+\end{equation}
 
 ### 8.2 How the temperature is measured
 
@@ -333,16 +327,16 @@ The PT100 channel should be calibrated near 28 °C using an independent referenc
 
 The software should support:
 
-\[
+\begin{equation}
 T_{\rm corrected}
 =
 mT_{\rm measured}+b,
-\]
+\end{equation}
 
 where:
 
-- \(m\) is a calibration slope
-- \(b\) is a calibration offset
+- $m$ is a calibration slope
+- $b$ is a calibration offset
 
 For validating the 0.1 °C requirement, use a separate precision thermometer or calibrated RTD readout.
 
@@ -458,11 +452,11 @@ The target is less than 0.1 °C ripple.
 
 The controller calculates rolling peak-to-peak ripple:
 
-\[
+\begin{equation}
 \Delta T_{\rm pp}
 =
 T_{\rm max}-T_{\rm min}
-\]
+\end{equation}
 
 over a configurable time window, such as 10 minutes.
 
@@ -705,19 +699,19 @@ This determines the approximate heat-loss coefficient of the box.
 
 Begin with:
 
-- \(K_D=0\)
-- small \(K_P\)
-- small \(K_I\)
+- $K_D=0$
+- small $K_P$
+- small $K_I$
 - conservative current limit
 
-Increase \(K_P\) until the system responds adequately but does not oscillate strongly.
+Increase $K_P$ until the system responds adequately but does not oscillate strongly.
 
-Then increase \(K_I\) until steady-state offset is removed.
+Then increase $K_I$ until steady-state offset is removed.
 
 If overshoot occurs:
 
-- reduce \(K_I\)
-- reduce \(K_P\)
+- reduce $K_I$
+- reduce $K_P$
 - decrease current slew rate
 - improve fan mixing
 - reduce maximum warm-up power near the setpoint
