@@ -72,6 +72,46 @@ The display also includes:
 The slow-controls field currently reports `N/A` rather than pretending that a
 connection exists.
 
+A normal steady-state display could look like:
+
+```text
+T 28.003C  SP 28.00
+I 0.464A   P 4.98W
+RH 42%     Rip 0.043C
+STABLE  OK         /
+```
+
+The final character acts as a software heartbeat and cycles through:
+
+```text
+|  /  -  \\
+```
+
+If the controller detects a local fault, the display could instead show something like:
+
+```text
+T 28.04C   SP 28.00
+I 0.000A   P 0.00W
+HEATER OFF
+FAULT: PT100 CTRL  -
+```
+
+All of these LCD functions are local to the Raspberry Pi and do not require external slow controls.
+
+The system architecture can be described as:
+
+```text
+PT100 ──► Raspberry Pi ──► PID ──► Heater
+                 │
+                 └────► Local LCD
+
+              works standalone
+
+                 │
+                 └────► External slow controls
+                        optional / future
+```
+
 ### 6. Rack-mount enclosure replaces suitcase assumption
 
 Documentation now uses a horizontal 19-inch rack enclosure as the baseline
@@ -164,45 +204,6 @@ validated HV clearance.
 
 **The PID controller and local display operate completely standalone and do not require a slow-controls or network connection.** The LCD locally displays temperature, heater current and power, humidity, sensor and system status, faults, and a software heartbeat. External slow-controls integration may be added later for remote monitoring, but it is not required for temperature regulation or local readout.
 
-A normal steady-state display could look like:
-
-```text
-T 28.003C  SP 28.00
-I 0.464A   P 4.98W
-RH 42%     Rip 0.043C
-STABLE  OK         /
-```
-
-The final character acts as a software heartbeat and cycles through:
-
-```text
-|  /  -  \\
-```
-
-If the controller detects a local fault, the display could instead show something like:
-
-```text
-T 28.04C   SP 28.00
-I 0.000A   P 0.00W
-HEATER OFF
-FAULT: PT100 CTRL  -
-```
-
-All of these LCD functions are local to the Raspberry Pi and do not require external slow controls.
-
-The system architecture can be described as:
-
-```text
-PT100 ──► Raspberry Pi ──► PID ──► Heater
-                 │
-                 └────► Local LCD
-
-              works standalone
-
-                 │
-                 └────► External slow controls
-                        optional / future
-```
 
 ### Automatic control-sensor failover
 
