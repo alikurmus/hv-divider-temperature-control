@@ -35,11 +35,6 @@ Do not run `install.sh` on a Mac. It is intended for Raspberry Pi OS and uses
     └── slow_controls_thermal_pid_controller.py
 ```
 
-The internal meeting notes are intentionally not included.
-
-`README.md` is documentation, not an executable program. GitHub renders it
-automatically on the repository front page.
-
 ## Create the Conda environment on macOS or Linux
 
 From the repository root:
