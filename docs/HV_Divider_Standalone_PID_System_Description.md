@@ -21,30 +21,30 @@ The controller is conceptually based on the notebook example *Heating a Room
 With Thermal Loss*. The enclosure is modeled as a thermal mass exchanging heat
 with its surroundings:
 
-\begin{equation}
-C\frac{dT}{dt}=P_{\rm heater}-G(T-T_{\rm ambient}).
-\end{equation}
+$$
+C\frac{dT}{dt}=P_{\mathrm{heater}}-G(T-T_{\mathrm{ambient}}).
+$$
 
 The software controller requests heater power, while the physical actuator is
 current controlled:
 
-\begin{equation}
-P_{\rm command}=K_P e+K_I\int e\,dt-K_D\frac{dT}{dt},
-\end{equation}
+$$
+P_{\mathrm{command}}=K_P e+K_I\int e\,dt-K_D\frac{dT}{dt},
+$$
 
 with
 
-\begin{equation}
-e=T_{\rm set}-T_{\rm control},
-\end{equation}
+$$
+e=T_{\mathrm{set}}-T_{\mathrm{control}},
+$$
 
 and
 
-\begin{equation}
-I_{\rm command}=\sqrt{\frac{P_{\rm command}}{R_{\rm heater}}}.
-\end{equation}
+$$
+I_{\mathrm{command}}=\sqrt{\frac{P_{\mathrm{command}}}{R_{\mathrm{heater}}}}.
+$$
 
-The first hardware tuning should use PI control with `kd=0`.
+The first hardware tuning should use PI control with $K_D=0$.
 
 ---
 
@@ -147,9 +147,9 @@ calibration, and thermal response, and that policy has not yet been established.
 All channels should be compared against an independent reference thermometer
 near 28 °C. The code supports slope/offset corrections:
 
-\begin{equation}
-T_{\rm corrected}=mT_{\rm measured}+b.
-\end{equation}
+$$
+T_{\mathrm{corrected}}=mT_{\mathrm{measured}}+b.
+$$
 
 The control PT100 has its own calibration parameters. Each monitor PT100 has
 separate calibration parameters in `config.toml`.
@@ -259,15 +259,15 @@ a fan is necessary.
 A 24 V / approximately 25 W resistive heater remains a useful characterization
 scale. For a nominal 24 V, 25 W heater:
 
-\begin{equation}
+$$
 R=\frac{24^2}{25}=23.04\ \Omega,
-\end{equation}
+$$
 
 and full-power current is approximately:
 
-\begin{equation}
+$$
 I=\frac{25}{24}=1.042\ \mathrm{A}.
-\end{equation}
+$$
 
 Approximate operating points at 23.04 Ω:
 
@@ -322,15 +322,15 @@ accepted before an EMI/noise test.
 
 Prefer measured power:
 
-\begin{equation}
-P_{\rm measured}=V_{\rm measured}I_{\rm measured}.
-\end{equation}
+$$
+P_{\mathrm{measured}}=V_{\mathrm{measured}}I_{\mathrm{measured}}.
+$$
 
 If direct voltage readback is not available, estimate:
 
-\begin{equation}
-P_{\rm estimated}=I^2R_{\rm heater}.
-\end{equation}
+$$
+P_{\mathrm{estimated}}=I^2R_{\mathrm{heater}}.
+$$
 
 The code supports INA260 readback for the embedded path or direct readback from
 a programmable supply.
@@ -438,9 +438,9 @@ Each cycle performs:
 
 The reported ripple is rolling peak-to-peak control-air temperature:
 
-\begin{equation}
-\Delta T_{\rm pp}=T_{\max}-T_{\min}
-\end{equation}
+$$
+\Delta T_{\mathrm{pp}}=T_{\max}-T_{\min}
+$$
 
 within the configured window, currently 600 s.
 
@@ -546,10 +546,10 @@ Only if natural convection produces unacceptable gradients or response time:
 
 ### Stage 4: PI tuning
 
-- start with `kd=0`;
-- use conservative `kp` and `ki`;
-- raise `kp` until response is useful without strong oscillation;
-- increase `ki` only enough to eliminate steady offset;
+- start with $K_D=0$;
+- use conservative $K_P$ and $K_I$;
+- raise $K_P$ until response is useful without strong oscillation;
+- increase $K_I$ only enough to eliminate steady offset;
 - re-check ripple and gradients after full thermal equilibrium.
 
 ### Stage 5: electrical-noise qualification
