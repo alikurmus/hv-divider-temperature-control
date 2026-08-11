@@ -374,6 +374,32 @@ The final character of the top row cycles through:
 This changes every display update, providing a visible heartbeat even when all
 physical values have stabilized.
 
+A normal steady-state display could look like:
+
+```text
+T 28.003C  SP 28.00
+I 0.464A   P 4.98W
+RH 42%     Rip 0.043C
+STABLE  OK         /
+```
+
+The final character acts as a software heartbeat and cycles through:
+
+```text
+|  /  -  \\
+```
+
+If the controller detects a local fault, the display could instead show something like:
+
+```text
+T 28.04C   SP 28.00
+I 0.000A   P 0.00W
+HEATER OFF
+FAULT: PT100 CTRL  -
+```
+
+All of these LCD functions are local to the Raspberry Pi and do not require external slow controls.
+
 ### External slow-controls indicator
 
 The controller is intentionally standalone, and no external slow-controls

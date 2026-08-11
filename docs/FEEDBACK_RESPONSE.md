@@ -1,8 +1,6 @@
-# Response to First Repository Feedback
+# Addressing First Repository Feedback
 
-This document records how the first round of collaborator feedback was folded
-into the temperature-control repository. It is intended to distinguish
-implemented software changes from hardware choices that remain open.
+This document is a summary of the implemented changes after getting feedback to the initial state of the repository. This update is on 2026-08-11.
 
 ## Implemented changes
 
@@ -161,11 +159,50 @@ The 5U unit is the preferred candidate, but the final choice depends on the
 mechanical CAD, real divider supports, connectors/feedthroughs, insulation, and
 validated HV clearance.
 
-### External slow-controls link
+### External slow-controls link and local display
 
-The local PID is intentionally standalone. No protocol or endpoint has been
-specified for external slow controls, so the display cannot yet show a real
-connection state. The LCD reserves the field for later implementation.
+
+**The PID controller and local display operate completely standalone and do not require a slow-controls or network connection.** The LCD locally displays temperature, heater current and power, humidity, sensor and system status, faults, and a software heartbeat. External slow-controls integration may be added later for remote monitoring, but it is not required for temperature regulation or local readout.
+
+A normal steady-state display could look like:
+
+```text
+T 28.003C  SP 28.00
+I 0.464A   P 4.98W
+RH 42%     Rip 0.043C
+STABLE  OK         /
+```
+
+The final character acts as a software heartbeat and cycles through:
+
+```text
+|  /  -  \\
+```
+
+If the controller detects a local fault, the display could instead show something like:
+
+```text
+T 28.04C   SP 28.00
+I 0.000A   P 0.00W
+HEATER OFF
+FAULT: PT100 CTRL  -
+```
+
+All of these LCD functions are local to the Raspberry Pi and do not require external slow controls.
+
+The system architecture can be described as:
+
+```text
+PT100 ──► Raspberry Pi ──► PID ──► Heater
+                 │
+                 └────► Local LCD
+
+              works standalone
+
+                 │
+                 └────► External slow controls
+                        optional / future
+```
 
 ### Automatic control-sensor failover
 
