@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Standalone temperature controller for the Project 8 HV-divider enclosure.
 
+The controller is intentionally standalone: slow controls are not required for
+regulation.  A future slow-controls link can monitor the local controller, but
+loss of that link must not stop local temperature regulation.
+
 Control concept
 ---------------
 The thermal plant is modeled as
@@ -9,28 +13,36 @@ The thermal plant is modeled as
 
 which is the physical version of the notebook example "Heating a Room with
 Thermal Loss".  The PI/PID controller calculates a requested heater POWER in
-watts.  The hardware interface remains a CURRENT command:
+watts.  The heater hardware remains current-controlled:
 
     I_command = sqrt(P_command / R_heater).
 
-This keeps the existing current-controlled heater convention while making the
-controller gains directly describe thermal power.
+The code supports four PT100 roles:
 
-The program can run in three modes:
+* control_air: the only sensor used by the PI/PID loop;
+* monitor_air: a second air sensor used to verify regulation and gradients;
+* ground_board: a sensor attached to the divider ground board;
+* spare: an additional monitored PT100 for redundancy/diagnostics.
 
-1. simulate: no hardware; useful for checking configuration and logging.
-2. dac: MAX31865 PT100 readout + MCP4725 analog current command + optional
-   INA260 current/voltage/power readback.
-3. scpi: MAX31865 PT100 readout + a programmable current supply controlled
-   through PyVISA/SCPI.  Supply-specific SCPI strings are configurable.
+The monitoring sensors are deliberately not used for automatic control-sensor
+failover.  A failed control sensor shuts the heater off; automatic failover can
+be added later only after sensor placement/calibration policy is agreed.
+
+Optional environmental/peripheral monitoring includes:
+
+* MAX31865 hardware fault status for every PT100 channel;
+* an SHT31-D relative-humidity sensor;
+* a fixed-speed fan with tachometer feedback (no PWM/frequency speed control);
+* a 20x4 LCD with a continuously changing heartbeat character.
 
 Safety philosophy
 -----------------
 Software is not the only safety layer.  The heater circuit must also include a
 normally-closed thermostat or thermal cutoff in series with the heater, a fuse,
-and a normally-off hardware enable/relay.  Any sensor failure, stale reading,
+and a normally-off hardware enable/relay.  Any control-sensor failure,
 over-temperature condition, uncaught exception, or process exit commands zero
-current and disables the heater output.
+current and disables the heater output.  Healthy monitor sensors can also trip
+on over-temperature when configured to do so.
 """
 
 from __future__ import annotations
@@ -43,6 +55,7 @@ import math
 import signal
 import statistics
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -93,13 +106,18 @@ class ControlConfig:
     maximum_valid_temperature_c: float = 60.0
     sensor_timeout_s: float = 5.0
     startup_valid_samples: int = 5
+    trip_on_monitor_overtemperature: bool = True
 
-    # Performance reporting. Ripple is rolling peak-to-peak temperature.
+    # Performance reporting. Ripple is rolling peak-to-peak control temperature.
     ripple_window_s: float = 600.0
     ripple_requirement_c: float = 0.10
     stable_error_band_c: float = 0.05
 
-    # Sensor calibration: calibrated = slope * raw + offset.
+    # Monitoring warnings do not stop the heater unless a safety limit is hit.
+    air_sensor_disagreement_warning_c: float = 0.20
+    humidity_warning_rh: float = 50.0
+
+    # Control PT100 calibration: calibrated = slope * raw + offset.
     temperature_calibration_slope: float = 1.0
     temperature_calibration_offset_c: float = 0.0
 
@@ -108,13 +126,35 @@ class ControlConfig:
 class HardwareConfig:
     mode: str = "simulate"  # simulate, dac, or scpi
 
-    # MAX31865 / PT100
-    rtd_cs_pin: str = "D5"
+    # Shared MAX31865 / PT100 configuration.
     rtd_wires: int = 4
     rtd_nominal_ohm: float = 100.0
     rtd_reference_ohm: float = 430.0
-    rtd_samples_per_read: int = 5
-    rtd_sample_spacing_s: float = 0.05
+    rtd_samples_per_read: int = 3
+    rtd_sample_spacing_s: float = 0.02
+
+    # Four proposed PT100 roles.  Each MAX31865 shares SPI clock/data lines but
+    # has its own chip-select pin.
+    control_rtd_cs_pin: str = "D5"
+    use_monitor_air_rtd: bool = True
+    monitor_air_rtd_cs_pin: str = "D6"
+    monitor_air_calibration_slope: float = 1.0
+    monitor_air_calibration_offset_c: float = 0.0
+
+    use_ground_board_rtd: bool = True
+    ground_board_rtd_cs_pin: str = "D13"
+    ground_board_calibration_slope: float = 1.0
+    ground_board_calibration_offset_c: float = 0.0
+
+    use_spare_rtd: bool = True
+    spare_rtd_cs_pin: str = "D19"
+    spare_calibration_slope: float = 1.0
+    spare_calibration_offset_c: float = 0.0
+
+    # Optional SHT31-D environmental monitor.  Monitoring only; humidity does
+    # not directly drive the heater.
+    use_humidity_sensor: bool = False
+    humidity_i2c_address: int = 0x44
 
     # DAC current command. The DAC only commands an external current driver.
     dac_i2c_address: int = 0x60
@@ -124,17 +164,29 @@ class HardwareConfig:
     use_ina260: bool = True
     ina260_i2c_address: int = 0x40
 
-    # GPIOs use BCM numbering through gpiozero.
+    # Heater output enable. GPIO numbers use BCM numbering through gpiozero.
     output_enable_gpio: Optional[int] = 17
-    fan_enable_gpio: Optional[int] = 27
     enable_active_high: bool = True
+
+    # Fan is OPTIONAL.  Baseline design is natural convection.  If installed,
+    # it is only switched on/off at fixed speed; there is no PWM/frequency speed
+    # command in this program.  Set fan_tach_gpio < 0 to disable tach readback.
+    use_fan: bool = False
+    fan_required: bool = False
+    fan_enable_gpio: int = 27
     fan_active_high: bool = True
+    fan_tach_gpio: int = 22
+    fan_tach_pull_up: bool = True
+    fan_startup_grace_s: float = 3.0
+    fan_tach_window_s: float = 2.0
+    fan_min_edges_per_window: int = 2
 
     # Optional 20x4 I2C LCD using PCF8574 backpack.
     use_lcd: bool = True
     lcd_i2c_address: int = 0x27
     lcd_columns: int = 20
     lcd_rows: int = 4
+    lcd_page_period_s: float = 5.0
 
     # Generic SCPI supply configuration.
     visa_resource: str = ""
@@ -159,6 +211,7 @@ class SimulationConfig:
     thermal_capacitance_j_per_c: float = 3000.0
     thermal_conductance_w_per_c: float = 0.60
     sensor_noise_std_c: float = 0.005
+    humidity_rh: float = 35.0
 
 
 @dataclass
@@ -188,6 +241,16 @@ class ElectricalReadback:
 
 
 @dataclass
+class EnvironmentReadings:
+    control_air_c: float
+    monitor_air_c: Optional[float] = None
+    ground_board_c: Optional[float] = None
+    spare_c: Optional[float] = None
+    humidity_rh: Optional[float] = None
+    sensor_faults: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class ControllerTerms:
     error_c: float
     p_w: float
@@ -201,17 +264,23 @@ class ControllerTerms:
 @dataclass
 class StatusSnapshot:
     timestamp: datetime
-    raw_temperature_c: float
+    environment: EnvironmentReadings
     filtered_temperature_c: float
     setpoint_c: float
     terms: ControllerTerms
     readback: ElectricalReadback
     ripple_pp_c: Optional[float]
     status: str
+    warnings: list[str] = field(default_factory=list)
+    fan_spinning: Optional[bool] = None
+    # Standalone operation is intentional.  None means no external slow-control
+    # protocol has been configured, not a failure.
+    slow_controls_connected: Optional[bool] = None
 
 
-class TemperatureSensor(Protocol):
-    def read_celsius(self) -> float: ...
+class SensorSuite(Protocol):
+    def read_environment(self) -> EnvironmentReadings: ...
+    def close(self) -> None: ...
 
 
 class CurrentActuator(Protocol):
@@ -222,101 +291,334 @@ class CurrentActuator(Protocol):
     def close(self) -> None: ...
 
 
+class Fan(Protocol):
+    def start(self) -> None: ...
+    def spinning(self) -> Optional[bool]: ...
+    def close(self) -> None: ...
+
+
 class Display(Protocol):
     def update(self, snapshot: StatusSnapshot) -> None: ...
     def show_fault(self, message: str) -> None: ...
     def close(self) -> None: ...
 
 
-class Max31865Pt100Sensor:
-    """4-wire PT100 sensor read using an MAX31865 SPI interface."""
+MAX31865_FAULT_NAMES = (
+    "HIGHTHRESH",
+    "LOWTHRESH",
+    "REFINLOW",
+    "REFINHIGH",
+    "RTDINLOW",
+    "OVUV",
+)
 
-    def __init__(self, cfg: HardwareConfig):
+
+class _Max31865Channel:
+    """One MAX31865/PT100 channel with explicit hardware-fault checks."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        spi: Any,
+        cs_pin_name: str,
+        cfg: HardwareConfig,
+        slope: float,
+        offset_c: float,
+    ):
         try:
             import board
             import digitalio
             import adafruit_max31865
         except ImportError as exc:
             raise RuntimeError(
-                "MAX31865 mode requires adafruit-blinka and "
+                "PT100 mode requires adafruit-blinka and "
                 "adafruit-circuitpython-max31865"
             ) from exc
 
         if cfg.rtd_wires not in (2, 3, 4):
             raise ValueError("rtd_wires must be 2, 3, or 4")
 
-        pin = getattr(board, cfg.rtd_cs_pin, None)
+        pin = getattr(board, cs_pin_name, None)
         if pin is None:
-            raise ValueError(f"Unknown board pin name: {cfg.rtd_cs_pin}")
+            raise ValueError(f"Unknown board pin name for {name}: {cs_pin_name}")
 
-        spi = board.SPI()
-        cs = digitalio.DigitalInOut(pin)
+        self.name = name
+        self._cs = digitalio.DigitalInOut(pin)
         self._sensor = adafruit_max31865.MAX31865(
             spi,
-            cs,
+            self._cs,
             rtd_nominal=cfg.rtd_nominal_ohm,
             ref_resistor=cfg.rtd_reference_ohm,
             wires=cfg.rtd_wires,
         )
         self._samples = max(1, int(cfg.rtd_samples_per_read))
         self._spacing = max(0.0, float(cfg.rtd_sample_spacing_s))
+        self._slope = float(slope)
+        self._offset_c = float(offset_c)
+
+    def _fault_text(self) -> Optional[str]:
+        fault_tuple = tuple(bool(v) for v in self._sensor.fault)
+        active = [
+            name for name, state in zip(MAX31865_FAULT_NAMES, fault_tuple) if state
+        ]
+        if not active:
+            return None
+        return ",".join(active)
 
     def read_celsius(self) -> float:
+        # Start each transaction with a clear fault register.  Any fault set by
+        # the subsequent conversion is then attributable to this read cycle.
+        self._sensor.clear_faults()
         readings: list[float] = []
         for index in range(self._samples):
-            value = float(self._sensor.temperature)
+            try:
+                value = float(self._sensor.temperature)
+            except Exception as exc:
+                fault = self._fault_text()
+                self._sensor.clear_faults()
+                if fault is not None:
+                    raise RuntimeError(
+                        f"MAX31865 {self.name} fault: {fault}"
+                    ) from exc
+                raise
             if finite(value):
                 readings.append(value)
             if index + 1 < self._samples and self._spacing > 0:
                 time.sleep(self._spacing)
+
+        fault = self._fault_text()
+        if fault is not None:
+            self._sensor.clear_faults()
+            raise RuntimeError(f"MAX31865 {self.name} fault: {fault}")
         if not readings:
-            raise RuntimeError("MAX31865 returned no finite PT100 readings")
-        return statistics.median(readings)
+            raise RuntimeError(f"MAX31865 {self.name} returned no finite readings")
 
-
-class _GpioOutputs:
-    def __init__(self, cfg: HardwareConfig):
-        self.enable_device = None
-        self.fan_device = None
-        try:
-            from gpiozero import OutputDevice
-        except ImportError:
-            if cfg.output_enable_gpio is not None or cfg.fan_enable_gpio is not None:
-                raise RuntimeError("GPIO outputs require gpiozero")
-            return
-
-        if cfg.output_enable_gpio is not None:
-            self.enable_device = OutputDevice(
-                cfg.output_enable_gpio,
-                active_high=cfg.enable_active_high,
-                initial_value=False,
-            )
-        if cfg.fan_enable_gpio is not None:
-            self.fan_device = OutputDevice(
-                cfg.fan_enable_gpio,
-                active_high=cfg.fan_active_high,
-                initial_value=False,
-            )
-
-    def heater_enable(self) -> None:
-        if self.enable_device is not None:
-            self.enable_device.on()
-
-    def heater_disable(self) -> None:
-        if self.enable_device is not None:
-            self.enable_device.off()
-
-    def fan_enable(self) -> None:
-        if self.fan_device is not None:
-            self.fan_device.on()
+        raw_c = statistics.median(readings)
+        return self._slope * raw_c + self._offset_c
 
     def close(self) -> None:
-        self.heater_disable()
-        if self.fan_device is not None:
-            self.fan_device.off()
-            self.fan_device.close()
-        if self.enable_device is not None:
-            self.enable_device.close()
+        try:
+            self._cs.deinit()
+        except Exception:
+            LOG.exception("Failed to close PT100 chip-select for %s", self.name)
+
+
+class Max31865SensorSuite:
+    """Control + monitoring PT100s, with optional SHT31-D humidity readout."""
+
+    def __init__(self, cfg: AppConfig):
+        try:
+            import board
+        except ImportError as exc:
+            raise RuntimeError("Hardware sensor mode requires adafruit-blinka") from exc
+
+        self._cfg = cfg
+        self._spi = board.SPI()
+        c = cfg.control
+        h = cfg.hardware
+
+        self._control = _Max31865Channel(
+            name="control_air",
+            spi=self._spi,
+            cs_pin_name=h.control_rtd_cs_pin,
+            cfg=h,
+            slope=c.temperature_calibration_slope,
+            offset_c=c.temperature_calibration_offset_c,
+        )
+        self._aux: dict[str, _Max31865Channel] = {}
+        if h.use_monitor_air_rtd:
+            self._aux["monitor_air"] = _Max31865Channel(
+                name="monitor_air",
+                spi=self._spi,
+                cs_pin_name=h.monitor_air_rtd_cs_pin,
+                cfg=h,
+                slope=h.monitor_air_calibration_slope,
+                offset_c=h.monitor_air_calibration_offset_c,
+            )
+        if h.use_ground_board_rtd:
+            self._aux["ground_board"] = _Max31865Channel(
+                name="ground_board",
+                spi=self._spi,
+                cs_pin_name=h.ground_board_rtd_cs_pin,
+                cfg=h,
+                slope=h.ground_board_calibration_slope,
+                offset_c=h.ground_board_calibration_offset_c,
+            )
+        if h.use_spare_rtd:
+            self._aux["spare"] = _Max31865Channel(
+                name="spare",
+                spi=self._spi,
+                cs_pin_name=h.spare_rtd_cs_pin,
+                cfg=h,
+                slope=h.spare_calibration_slope,
+                offset_c=h.spare_calibration_offset_c,
+            )
+
+        self._humidity_sensor = None
+        self._humidity_i2c = None
+        if h.use_humidity_sensor:
+            try:
+                import adafruit_sht31d
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Humidity monitoring requires adafruit-circuitpython-sht31d"
+                ) from exc
+            self._humidity_i2c = board.I2C()
+            self._humidity_sensor = adafruit_sht31d.SHT31D(
+                self._humidity_i2c,
+                address=h.humidity_i2c_address,
+            )
+
+    def read_environment(self) -> EnvironmentReadings:
+        # The control channel is safety-critical.  Propagate any exception so
+        # the outer controller trips the heater rather than silently failing over.
+        control_c = self._control.read_celsius()
+        values: dict[str, Optional[float]] = {
+            "monitor_air": None,
+            "ground_board": None,
+            "spare": None,
+        }
+        faults: dict[str, str] = {}
+
+        for name, channel in self._aux.items():
+            try:
+                values[name] = channel.read_celsius()
+            except Exception as exc:
+                faults[name] = str(exc)
+                LOG.warning("Monitoring PT100 %s failed: %s", name, exc)
+
+        humidity_rh: Optional[float] = None
+        if self._humidity_sensor is not None:
+            try:
+                humidity_rh = float(self._humidity_sensor.relative_humidity)
+                if not finite(humidity_rh) or not 0.0 <= humidity_rh <= 100.0:
+                    raise RuntimeError(f"invalid humidity reading {humidity_rh}")
+            except Exception as exc:
+                faults["humidity"] = str(exc)
+                LOG.warning("Humidity sensor failed: %s", exc)
+                humidity_rh = None
+
+        return EnvironmentReadings(
+            control_air_c=control_c,
+            monitor_air_c=values["monitor_air"],
+            ground_board_c=values["ground_board"],
+            spare_c=values["spare"],
+            humidity_rh=humidity_rh,
+            sensor_faults=faults,
+        )
+
+    def close(self) -> None:
+        self._control.close()
+        for channel in self._aux.values():
+            channel.close()
+
+
+class HeaterEnable:
+    def __init__(self, cfg: HardwareConfig):
+        self._device = None
+        if cfg.output_enable_gpio is None:
+            return
+        try:
+            from gpiozero import OutputDevice
+        except ImportError as exc:
+            raise RuntimeError("Heater enable GPIO requires gpiozero") from exc
+        self._device = OutputDevice(
+            cfg.output_enable_gpio,
+            active_high=cfg.enable_active_high,
+            initial_value=False,
+        )
+
+    def on(self) -> None:
+        if self._device is not None:
+            self._device.on()
+
+    def off(self) -> None:
+        if self._device is not None:
+            self._device.off()
+
+    def close(self) -> None:
+        self.off()
+        if self._device is not None:
+            self._device.close()
+
+
+class NullFan:
+    def start(self) -> None:
+        return
+
+    def spinning(self) -> Optional[bool]:
+        return None
+
+    def close(self) -> None:
+        return
+
+
+class FixedSpeedFan:
+    """Optional fixed-speed fan with edge-based tachometer feedback.
+
+    The output is binary on/off only.  This program does not PWM the fan and
+    does not adjust fan frequency or speed.
+    """
+
+    def __init__(self, cfg: HardwareConfig):
+        try:
+            from gpiozero import DigitalInputDevice, OutputDevice
+        except ImportError as exc:
+            raise RuntimeError("Fan GPIO/tach monitoring requires gpiozero") from exc
+
+        self._cfg = cfg
+        self._output = OutputDevice(
+            cfg.fan_enable_gpio,
+            active_high=cfg.fan_active_high,
+            initial_value=False,
+        )
+        self._tach = None
+        self._edge_times: Deque[float] = deque()
+        self._lock = threading.Lock()
+        self._started_at: Optional[float] = None
+
+        if cfg.fan_tach_gpio >= 0:
+            self._tach = DigitalInputDevice(
+                cfg.fan_tach_gpio,
+                pull_up=cfg.fan_tach_pull_up,
+            )
+            self._tach.when_activated = self._on_tach_edge
+        elif cfg.fan_required:
+            raise ValueError("fan_required=true requires fan_tach_gpio >= 0")
+
+    def _on_tach_edge(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._edge_times.append(now)
+
+    def start(self) -> None:
+        self._output.on()
+        if self._started_at is None:
+            self._started_at = time.monotonic()
+
+    def spinning(self) -> Optional[bool]:
+        if self._tach is None:
+            return None
+        now = time.monotonic()
+        if self._started_at is None:
+            return False
+        if now - self._started_at < self._cfg.fan_startup_grace_s:
+            return None
+
+        window = max(0.1, self._cfg.fan_tach_window_s)
+        with self._lock:
+            while self._edge_times and now - self._edge_times[0] > window:
+                self._edge_times.popleft()
+            return len(self._edge_times) >= max(1, self._cfg.fan_min_edges_per_window)
+
+    def close(self) -> None:
+        try:
+            self._output.off()
+        finally:
+            if self._tach is not None:
+                self._tach.close()
+            self._output.close()
 
 
 class Ina260Monitor:
@@ -347,7 +649,8 @@ class DacCurrentActuator:
 
     IMPORTANT: the MCP4725 cannot drive the heater.  Its 0-3.3 V output must be
     connected to the command input of a current-regulated power stage whose
-    full-scale current matches current_driver_full_scale_a.
+    full-scale current matches current_driver_full_scale_a.  Selection of the
+    final low-noise current driver remains an open hardware decision.
     """
 
     def __init__(self, cfg: HardwareConfig):
@@ -365,24 +668,23 @@ class DacCurrentActuator:
         self._dac = adafruit_mcp4725.MCP4725(
             self._i2c, address=cfg.dac_i2c_address
         )
-        self._gpio = _GpioOutputs(cfg)
+        self._enable = HeaterEnable(cfg)
         self._monitor = Ina260Monitor(cfg, self._i2c)
         self._enabled = False
         self.set_current_a(0.0)
-        self._gpio.fan_enable()
 
     def enable(self) -> None:
         if self._enabled:
             return
         self.set_current_a(0.0)
-        self._gpio.heater_enable()
+        self._enable.on()
         self._enabled = True
 
     def disable(self) -> None:
         try:
             self.set_current_a(0.0)
         finally:
-            self._gpio.heater_disable()
+            self._enable.off()
             self._enabled = False
 
     def set_current_a(self, current_a: float) -> None:
@@ -397,7 +699,7 @@ class DacCurrentActuator:
 
     def close(self) -> None:
         self.disable()
-        self._gpio.close()
+        self._enable.close()
 
 
 class ScpiCurrentActuator:
@@ -415,8 +717,7 @@ class ScpiCurrentActuator:
         self._rm = pyvisa.ResourceManager("@py")
         self._instrument = self._rm.open_resource(cfg.visa_resource)
         self._instrument.timeout = cfg.scpi_timeout_ms
-        self._gpio = _GpioOutputs(cfg)
-        self._gpio.fan_enable()
+        self._enable = HeaterEnable(cfg)
         self._enabled = False
         self.disable()
 
@@ -424,7 +725,7 @@ class ScpiCurrentActuator:
         if self._enabled:
             return
         self.set_current_a(0.0)
-        self._gpio.heater_enable()
+        self._enable.on()
         self._instrument.write(self._cfg.scpi_output_on)
         self._enabled = True
 
@@ -434,7 +735,7 @@ class ScpiCurrentActuator:
             if self._enabled:
                 self._instrument.write(self._cfg.scpi_output_off)
         finally:
-            self._gpio.heater_disable()
+            self._enable.off()
             self._enabled = False
 
     def set_current_a(self, current_a: float) -> None:
@@ -456,16 +757,17 @@ class ScpiCurrentActuator:
         finally:
             self._instrument.close()
             self._rm.close()
-            self._gpio.close()
+            self._enable.close()
 
 
-class SimulatedPlant(TemperatureSensor, CurrentActuator):
+class SimulatedPlant(SensorSuite, CurrentActuator):
     def __init__(self, cfg: AppConfig):
         import random
 
         self._random = random.Random(12345)
         self._sim = cfg.simulation
         self._control = cfg.control
+        self._hardware = cfg.hardware
         self._temperature_c = self._sim.initial_temperature_c
         self._current_a = 0.0
         self._enabled = False
@@ -483,10 +785,26 @@ class SimulatedPlant(TemperatureSensor, CurrentActuator):
         dtdt = (power - heat_loss) / self._sim.thermal_capacitance_j_per_c
         self._temperature_c += dtdt * dt
 
-    def read_celsius(self) -> float:
+    def _noise(self) -> float:
+        return self._random.gauss(0.0, self._sim.sensor_noise_std_c)
+
+    def read_environment(self) -> EnvironmentReadings:
         self._step()
-        return self._temperature_c + self._random.gauss(
-            0.0, self._sim.sensor_noise_std_c
+        t = self._temperature_c
+        return EnvironmentReadings(
+            control_air_c=t + self._noise(),
+            monitor_air_c=(t + 0.010 + self._noise())
+            if self._hardware.use_monitor_air_rtd
+            else None,
+            ground_board_c=(t + 0.020 + self._noise())
+            if self._hardware.use_ground_board_rtd
+            else None,
+            spare_c=(t - 0.010 + self._noise())
+            if self._hardware.use_spare_rtd
+            else None,
+            humidity_rh=self._sim.humidity_rh
+            if self._hardware.use_humidity_sensor
+            else None,
         )
 
     def enable(self) -> None:
@@ -516,21 +834,35 @@ class SimulatedPlant(TemperatureSensor, CurrentActuator):
 
 class ConsoleDisplay:
     def update(self, snapshot: StatusSnapshot) -> None:
+        env = snapshot.environment
         rb = snapshot.readback
-        current = rb.current_a if rb.current_a is not None else snapshot.terms.commanded_current_a
+        current = (
+            rb.current_a
+            if rb.current_a is not None
+            else snapshot.terms.commanded_current_a
+        )
         power = rb.power_w if rb.power_w is not None else snapshot.terms.commanded_power_w
         ripple = "--" if snapshot.ripple_pp_c is None else f"{snapshot.ripple_pp_c:.3f}"
+        fan = "--" if snapshot.fan_spinning is None else ("OK" if snapshot.fan_spinning else "FAIL")
+        warning_text = "; ".join(snapshot.warnings) if snapshot.warnings else "none"
         LOG.info(
-            "Traw=%.4f C Tfilt=%.4f C SP=%.3f C Icmd=%.4f A "
-            "Imeas=%s A P=%s W ripple_pp=%s C status=%s",
-            snapshot.raw_temperature_c,
+            "Tctl=%.4f C Tfilt=%.4f C Tair2=%s C Tboard=%s C Tspare=%s C "
+            "RH=%s %% SP=%.3f C Icmd=%.4f A Imeas=%s A P=%s W "
+            "ripple_pp=%s C fan=%s status=%s warnings=%s",
+            env.control_air_c,
             snapshot.filtered_temperature_c,
+            "--" if env.monitor_air_c is None else f"{env.monitor_air_c:.4f}",
+            "--" if env.ground_board_c is None else f"{env.ground_board_c:.4f}",
+            "--" if env.spare_c is None else f"{env.spare_c:.4f}",
+            "--" if env.humidity_rh is None else f"{env.humidity_rh:.1f}",
             snapshot.setpoint_c,
             snapshot.terms.commanded_current_a,
             "--" if current is None else f"{current:.4f}",
             "--" if power is None else f"{power:.3f}",
             ripple,
+            fan,
             snapshot.status,
+            warning_text,
         )
 
     def show_fault(self, message: str) -> None:
@@ -541,6 +873,8 @@ class ConsoleDisplay:
 
 
 class Lcd20x4Display:
+    HEARTBEAT = ("|", "/", "-", "\\")
+
     def __init__(self, cfg: HardwareConfig):
         try:
             from RPLCD.i2c import CharLCD
@@ -557,6 +891,9 @@ class Lcd20x4Display:
         )
         self._cols = cfg.lcd_columns
         self._rows = cfg.lcd_rows
+        self._page_period_s = max(1.0, cfg.lcd_page_period_s)
+        self._started = time.monotonic()
+        self._heartbeat_index = 0
         self._lcd.clear()
 
     def _line(self, row: int, text: str) -> None:
@@ -565,28 +902,58 @@ class Lcd20x4Display:
         self._lcd.cursor_pos = (row, 0)
         self._lcd.write_string(text[: self._cols].ljust(self._cols))
 
+    @staticmethod
+    def _fmt_temp(value: Optional[float]) -> str:
+        return "--.--" if value is None else f"{value:5.2f}"
+
     def update(self, snapshot: StatusSnapshot) -> None:
+        env = snapshot.environment
         rb = snapshot.readback
         imeas = rb.current_a
         power = rb.power_w
-        ripple = snapshot.ripple_pp_c
+        heartbeat = self.HEARTBEAT[self._heartbeat_index % len(self.HEARTBEAT)]
+        self._heartbeat_index += 1
+        page = int((time.monotonic() - self._started) / self._page_period_s) % 2
+
+        # A changing final character is a local heartbeat showing the process is
+        # still updating even when all measured values have settled.
         self._line(
             0,
-            f"T {snapshot.filtered_temperature_c:6.3f}  SP {snapshot.setpoint_c:5.2f}",
+            f"T{snapshot.filtered_temperature_c:6.3f} SP{snapshot.setpoint_c:5.2f} {heartbeat}",
         )
-        self._line(
-            1,
-            f"Icmd {snapshot.terms.commanded_current_a:5.3f} A",
-        )
-        self._line(
-            2,
-            f"I {('--' if imeas is None else f'{imeas:.3f}')}A "
-            f"P {('--' if power is None else f'{power:.2f}')}W",
-        )
-        self._line(
-            3,
-            f"Rip {('--' if ripple is None else f'{ripple:.3f}')}C {snapshot.status}",
-        )
+
+        if page == 0:
+            current_text = (
+                f"{imeas:.3f}" if imeas is not None else f"{snapshot.terms.commanded_current_a:.3f}"
+            )
+            power_text = (
+                f"{power:.2f}" if power is not None else f"{snapshot.terms.commanded_power_w:.2f}"
+            )
+            self._line(1, f"I {current_text}A P {power_text}W")
+            self._line(
+                2,
+                f"A2{self._fmt_temp(env.monitor_air_c)} B{self._fmt_temp(env.ground_board_c)}",
+            )
+            rh = "--" if env.humidity_rh is None else f"{env.humidity_rh:.0f}%"
+            fan = (
+                "OFF"
+                if snapshot.fan_spinning is None
+                else ("OK" if snapshot.fan_spinning else "FAIL")
+            )
+            state = "WARN" if snapshot.warnings else snapshot.status
+            self._line(3, f"RH{rh} F{fan} {state}")
+        else:
+            ripple = "--" if snapshot.ripple_pp_c is None else f"{snapshot.ripple_pp_c:.3f}"
+            self._line(1, f"Spare {self._fmt_temp(env.spare_c)} C")
+            self._line(2, f"Ripple {ripple} C")
+            # External slow-controls protocol is intentionally not selected yet.
+            sc = (
+                "N/A"
+                if snapshot.slow_controls_connected is None
+                else ("OK" if snapshot.slow_controls_connected else "DOWN")
+            )
+            warn_count = len(snapshot.warnings)
+            self._line(3, f"SC {sc} Warn {warn_count}")
 
     def show_fault(self, message: str) -> None:
         self._lcd.clear()
@@ -678,13 +1045,11 @@ class PowerPid:
         p_w = self.cfg.kp_w_per_c * error_c
         d_w = -self.cfg.kd_w_s_per_c * self.filtered_dtdt_c_per_s
 
-        # First evaluate with the existing integral state.
         i_w = self.cfg.ki_w_per_c_s * self.integral_c_s
         unsaturated = self.cfg.power_bias_w + p_w + i_w + d_w
         saturated = clamp(unsaturated, 0.0, self.cfg.max_power_w)
 
-        # Conditional integration: integrate only when not saturated, or when the
-        # error would drive the output back toward the allowed range.
+        # Conditional integration prevents wind-up at output limits.
         integrate = (
             0.0 < unsaturated < self.cfg.max_power_w
             or (unsaturated <= 0.0 and error_c > 0.0)
@@ -704,7 +1069,6 @@ class PowerPid:
         current = math.sqrt(max(0.0, saturated) / resistance)
         current = min(current, self.cfg.max_current_a)
 
-        # Current slew limiting avoids abrupt electrical and thermal steps.
         maximum_change = max(0.0, self.cfg.current_slew_a_per_s) * dt
         current = clamp(
             current,
@@ -713,7 +1077,6 @@ class PowerPid:
         )
         self.last_current_a = current
 
-        # Current limiting can reduce actual command power below the PI request.
         commanded_power = min(saturated, current * current * resistance)
 
         return ControllerTerms(
@@ -730,8 +1093,12 @@ class PowerPid:
 class CsvLogger:
     HEADER = [
         "timestamp_utc",
-        "raw_temperature_c",
-        "filtered_temperature_c",
+        "control_air_temperature_c",
+        "filtered_control_temperature_c",
+        "monitor_air_temperature_c",
+        "ground_board_temperature_c",
+        "spare_temperature_c",
+        "relative_humidity_percent",
         "setpoint_c",
         "error_c",
         "p_term_w",
@@ -743,6 +1110,9 @@ class CsvLogger:
         "measured_voltage_v",
         "measured_power_w",
         "ripple_peak_to_peak_c",
+        "fan_spinning",
+        "sensor_faults",
+        "warnings",
         "status",
     ]
 
@@ -755,14 +1125,23 @@ class CsvLogger:
         if new_file:
             self._writer.writerow(self.HEADER)
 
+    @staticmethod
+    def _number(value: Optional[float]) -> str:
+        return "" if value is None else f"{value:.6f}"
+
     def write(self, snapshot: StatusSnapshot) -> None:
         rb = snapshot.readback
         terms = snapshot.terms
+        env = snapshot.environment
         self._writer.writerow(
             [
                 snapshot.timestamp.isoformat(),
-                f"{snapshot.raw_temperature_c:.6f}",
+                f"{env.control_air_c:.6f}",
                 f"{snapshot.filtered_temperature_c:.6f}",
+                self._number(env.monitor_air_c),
+                self._number(env.ground_board_c),
+                self._number(env.spare_c),
+                self._number(env.humidity_rh),
                 f"{snapshot.setpoint_c:.6f}",
                 f"{terms.error_c:.6f}",
                 f"{terms.p_w:.6f}",
@@ -770,10 +1149,13 @@ class CsvLogger:
                 f"{terms.d_w:.6f}",
                 f"{terms.commanded_power_w:.6f}",
                 f"{terms.commanded_current_a:.6f}",
-                "" if rb.current_a is None else f"{rb.current_a:.6f}",
-                "" if rb.voltage_v is None else f"{rb.voltage_v:.6f}",
-                "" if rb.power_w is None else f"{rb.power_w:.6f}",
-                "" if snapshot.ripple_pp_c is None else f"{snapshot.ripple_pp_c:.6f}",
+                self._number(rb.current_a),
+                self._number(rb.voltage_v),
+                self._number(rb.power_w),
+                self._number(snapshot.ripple_pp_c),
+                "" if snapshot.fan_spinning is None else str(snapshot.fan_spinning),
+                "; ".join(f"{k}:{v}" for k, v in env.sensor_faults.items()),
+                "; ".join(snapshot.warnings),
                 snapshot.status,
             ]
         )
@@ -787,13 +1169,15 @@ class StandaloneTemperatureController:
     def __init__(
         self,
         cfg: AppConfig,
-        sensor: TemperatureSensor,
+        sensors: SensorSuite,
         actuator: CurrentActuator,
+        fan: Fan,
         display: Display,
     ):
         self.cfg = cfg
-        self.sensor = sensor
+        self.sensors = sensors
         self.actuator = actuator
+        self.fan = fan
         self.display = display
         self.pid = PowerPid(cfg.control)
         self.csv = CsvLogger(cfg.logging.csv_path)
@@ -801,7 +1185,6 @@ class StandaloneTemperatureController:
         self._fault_latched = False
         self._valid_samples = 0
         self._ripple_samples: Deque[tuple[float, float]] = deque()
-        self._last_good_sensor_time: Optional[float] = None
         self._last_loop_time = time.monotonic()
         self._closed = False
 
@@ -813,22 +1196,60 @@ class StandaloneTemperatureController:
         LOG.warning("Received signal %s; shutting down heater", signum)
         self._stop = True
 
-    def _validate_temperature(self, temperature_c: float) -> None:
+    def _validate_temperature(self, name: str, temperature_c: float) -> None:
         c = self.cfg.control
         if not finite(temperature_c):
-            raise RuntimeError("PT100 temperature is non-finite")
+            raise RuntimeError(f"{name} temperature is non-finite")
         if not c.minimum_valid_temperature_c <= temperature_c <= c.maximum_valid_temperature_c:
             raise RuntimeError(
-                f"PT100 temperature {temperature_c:.3f} C is outside valid range"
+                f"{name} temperature {temperature_c:.3f} C is outside valid range"
             )
         if temperature_c >= c.overtemperature_c:
             raise RuntimeError(
-                f"over-temperature: {temperature_c:.3f} C >= {c.overtemperature_c:.3f} C"
+                f"over-temperature at {name}: {temperature_c:.3f} C >= "
+                f"{c.overtemperature_c:.3f} C"
             )
 
-    def _calibrate(self, raw_c: float) -> float:
+    def _validate_environment(self, env: EnvironmentReadings) -> list[str]:
         c = self.cfg.control
-        return c.temperature_calibration_slope * raw_c + c.temperature_calibration_offset_c
+        self._validate_temperature("control_air", env.control_air_c)
+        warnings: list[str] = []
+
+        monitor_values = {
+            "monitor_air": env.monitor_air_c,
+            "ground_board": env.ground_board_c,
+            "spare": env.spare_c,
+        }
+        for name, value in monitor_values.items():
+            if value is None:
+                continue
+            if not finite(value):
+                warnings.append(f"{name} non-finite")
+                continue
+            if not c.minimum_valid_temperature_c <= value <= c.maximum_valid_temperature_c:
+                warnings.append(f"{name} outside valid range")
+                continue
+            if value >= c.overtemperature_c:
+                if c.trip_on_monitor_overtemperature:
+                    raise RuntimeError(
+                        f"over-temperature at {name}: {value:.3f} C >= "
+                        f"{c.overtemperature_c:.3f} C"
+                    )
+                warnings.append(f"{name} over-temperature")
+
+        if env.monitor_air_c is not None:
+            delta = abs(env.control_air_c - env.monitor_air_c)
+            if delta > c.air_sensor_disagreement_warning_c:
+                warnings.append(f"air PT100 disagreement {delta:.3f} C")
+
+        if env.humidity_rh is not None and env.humidity_rh > c.humidity_warning_rh:
+            warnings.append(f"humidity {env.humidity_rh:.1f}% RH")
+
+        for name, text in env.sensor_faults.items():
+            warnings.append(f"{name} fault")
+            LOG.warning("Sensor fault %s: %s", name, text)
+
+        return warnings
 
     def _update_ripple(self, now: float, temperature_c: float) -> Optional[float]:
         window = self.cfg.control.ripple_window_s
@@ -840,10 +1261,17 @@ class StandaloneTemperatureController:
         values = [sample[1] for sample in self._ripple_samples]
         return max(values) - min(values)
 
-    def _status(self, terms: ControllerTerms, ripple: Optional[float]) -> str:
+    def _status(
+        self,
+        terms: ControllerTerms,
+        ripple: Optional[float],
+        warnings: list[str],
+    ) -> str:
         c = self.cfg.control
         if self._valid_samples < c.startup_valid_samples:
             return "START"
+        if warnings:
+            return "WARN"
         if abs(terms.error_c) > c.stable_error_band_c:
             return "RAMP"
         if ripple is None:
@@ -862,6 +1290,7 @@ class StandaloneTemperatureController:
         c = self.cfg.control
         LOG.info("Controller starting with setpoint %.3f C", c.setpoint_c)
         self.actuator.disable()
+        self.fan.start()
 
         while not self._stop and not self._fault_latched:
             loop_started = time.monotonic()
@@ -870,21 +1299,28 @@ class StandaloneTemperatureController:
 
             try:
                 sensor_started = time.monotonic()
-                sensor_raw = self.sensor.read_celsius()
+                env = self.sensors.read_environment()
                 sensor_elapsed = time.monotonic() - sensor_started
                 if sensor_elapsed > c.sensor_timeout_s:
                     raise RuntimeError(
-                        f"PT100 read exceeded timeout: {sensor_elapsed:.2f} s"
+                        f"sensor-suite read exceeded timeout: {sensor_elapsed:.2f} s"
                     )
-                temperature_c = self._calibrate(sensor_raw)
-                self._validate_temperature(temperature_c)
-                self._last_good_sensor_time = loop_started
+                warnings = self._validate_environment(env)
                 self._valid_samples += 1
 
-                terms = self.pid.update(temperature_c, dt)
+                fan_spinning = self.fan.spinning()
+                if self.cfg.hardware.use_fan:
+                    if fan_spinning is False:
+                        if self.cfg.hardware.fan_required:
+                            raise RuntimeError("fan tachometer indicates fan is not spinning")
+                        warnings.append("fan not spinning")
+                    elif fan_spinning is None and self.cfg.hardware.fan_tach_gpio < 0:
+                        warnings.append("fan tachometer not configured")
 
-                # Keep the heater disabled until several consecutive valid RTD
-                # samples have been received after startup.
+                terms = self.pid.update(env.control_air_c, dt)
+
+                # Keep the heater disabled until several consecutive valid
+                # control PT100 readings have been received after startup.
                 if self._valid_samples < c.startup_valid_samples:
                     self.actuator.disable()
                     terms.commanded_current_a = 0.0
@@ -904,17 +1340,20 @@ class StandaloneTemperatureController:
 
                 filtered = self.pid.filtered_temperature_c
                 assert filtered is not None
-                ripple = self._update_ripple(loop_started, temperature_c)
-                status = self._status(terms, ripple)
+                ripple = self._update_ripple(loop_started, env.control_air_c)
+                status = self._status(terms, ripple, warnings)
                 snapshot = StatusSnapshot(
                     timestamp=datetime.now(timezone.utc),
-                    raw_temperature_c=temperature_c,
+                    environment=env,
                     filtered_temperature_c=filtered,
                     setpoint_c=c.setpoint_c,
                     terms=terms,
                     readback=readback,
                     ripple_pp_c=ripple,
                     status=status,
+                    warnings=warnings,
+                    fan_spinning=fan_spinning,
+                    slow_controls_connected=None,
                 )
                 self.csv.write(snapshot)
                 self.display.update(snapshot)
@@ -941,6 +1380,14 @@ class StandaloneTemperatureController:
         except Exception:
             LOG.exception("Failed to close actuator")
         try:
+            self.fan.close()
+        except Exception:
+            LOG.exception("Failed to close fan")
+        try:
+            self.sensors.close()
+        except Exception:
+            LOG.exception("Failed to close sensor suite")
+        try:
             self.display.close()
         except Exception:
             LOG.exception("Failed to close display")
@@ -950,20 +1397,22 @@ class StandaloneTemperatureController:
             LOG.exception("Failed to close CSV log")
 
 
-def build_hardware(cfg: AppConfig) -> tuple[TemperatureSensor, CurrentActuator]:
+def build_hardware(cfg: AppConfig) -> tuple[SensorSuite, CurrentActuator, Fan]:
     mode = cfg.hardware.mode.strip().lower()
     if mode == "simulate":
         plant = SimulatedPlant(cfg)
-        return plant, plant
+        return plant, plant, NullFan()
 
-    sensor = Max31865Pt100Sensor(cfg.hardware)
+    sensors: SensorSuite = Max31865SensorSuite(cfg)
     if mode == "dac":
         actuator: CurrentActuator = DacCurrentActuator(cfg.hardware)
     elif mode == "scpi":
         actuator = ScpiCurrentActuator(cfg.hardware)
     else:
         raise ValueError("hardware.mode must be simulate, dac, or scpi")
-    return sensor, actuator
+
+    fan: Fan = FixedSpeedFan(cfg.hardware) if cfg.hardware.use_fan else NullFan()
+    return sensors, actuator, fan
 
 
 def build_display(cfg: AppConfig) -> Display:
@@ -1007,9 +1456,9 @@ def main() -> int:
             cfg.logging.csv_path = "./controller_simulation.csv"
     configure_logging(cfg.logging.log_level)
 
-    sensor, actuator = build_hardware(cfg)
+    sensors, actuator, fan = build_hardware(cfg)
     display = build_display(cfg)
-    controller = StandaloneTemperatureController(cfg, sensor, actuator, display)
+    controller = StandaloneTemperatureController(cfg, sensors, actuator, fan, display)
     controller.run()
     return 1 if controller._fault_latched else 0
 

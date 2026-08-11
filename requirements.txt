@@ -1,6 +1,7 @@
 # Hardware libraries for Raspberry Pi OS Bookworm / Python 3.11
 adafruit-blinka
 adafruit-circuitpython-max31865
+adafruit-circuitpython-sht31d
 adafruit-circuitpython-mcp4725
 adafruit-circuitpython-ina260
 gpiozero

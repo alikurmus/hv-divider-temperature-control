@@ -28,12 +28,17 @@ Do not run `install.sh` on a Mac. It is intended for Raspberry Pi OS and uses
 ├── notebooks/
 │   └── PID_Control_Toy_Simulation.ipynb
 ├── docs/
-│   └── HV_Divider_Standalone_PID_System_Description.md
+│   ├── HV_Divider_Standalone_PID_System_Description.md
+│   └── FEEDBACK_RESPONSE.md
 └── legacy/
     ├── cryogenic_pid_loop_v2.py
     └── slow_controls_thermal_pid_controller.py
 ```
 
+The internal meeting notes are intentionally not included.
+
+`README.md` is documentation, not an executable program. GitHub renders it
+automatically on the repository front page.
 
 ## Create the Conda environment on macOS or Linux
 
@@ -99,6 +104,60 @@ In JupyterLab, select the **HV Divider PID** kernel if it is not selected
 automatically. Run the notebook cells from top to bottom. The `ipywidgets`
 controls can then be used to vary the toy-model parameters.
 
+The notebook uses the interactive Matplotlib widget backend. That backend is
+provided by the separate `ipympl` package included in `environment.yml`.
+Both of the following notebook magics select the same backend:
+
+```python
+%matplotlib widget
+```
+
+```python
+%matplotlib ipympl
+```
+
+### Fix a missing Matplotlib widget backend
+
+An error such as:
+
+```text
+RuntimeError: 'widget' is not a recognised backend name
+```
+
+means that `ipympl` is missing from the Python environment used by the active
+Jupyter kernel. Update the existing environment:
+
+```bash
+conda activate hv-divider-pid
+mamba install -c conda-forge ipympl
+```
+
+The equivalent Conda command is:
+
+```bash
+conda install -c conda-forge ipympl
+```
+
+Then completely restart the notebook kernel. If JupyterLab was launched before
+the installation, stop and restart JupyterLab from the same environment:
+
+```bash
+conda activate hv-divider-pid
+jupyter lab notebooks/PID_Control_Toy_Simulation.ipynb
+```
+
+Verify that the active environment contains the backend:
+
+```bash
+python -c "import ipympl, ipywidgets, matplotlib; print('ipympl', ipympl.__version__); print('ipywidgets', ipywidgets.__version__); print('matplotlib', matplotlib.__version__)"
+```
+
+If JupyterLab and the notebook kernel are deliberately installed in different
+Conda environments, install `ipympl` in the kernel environment and
+`jupyterlab_widgets` in the environment that launches JupyterLab. The simplest
+and recommended setup for this repository is to launch JupyterLab from the
+`hv-divider-pid` environment so both parts are in one environment.
+
 ## Remove and rebuild the laptop environment
 
 ```bash
@@ -161,6 +220,44 @@ sudo -u pidbox \
 
 Stop it with `Ctrl+C`.
 
+
+## New hardware-monitoring options
+
+The first feedback revision adds four PT100 roles, optional humidity monitoring,
+and optional fan tachometer monitoring. The default `config.toml` is still in
+`simulate` mode. Before changing to real hardware, review these fields:
+
+```toml
+control_rtd_cs_pin = "D5"
+use_monitor_air_rtd = true
+monitor_air_rtd_cs_pin = "D6"
+use_ground_board_rtd = true
+ground_board_rtd_cs_pin = "D13"
+use_spare_rtd = true
+spare_rtd_cs_pin = "D19"
+
+use_humidity_sensor = false
+
+# Natural convection is the baseline.
+use_fan = false
+fan_required = false
+fan_tach_gpio = 22
+```
+
+Each enabled PT100 requires its own MAX31865 interface. The interfaces share the
+SPI bus but use separate chip-select pins.
+
+The control sensor is the only PID input. A control-sensor fault shuts the heater
+off. Secondary-sensor faults are warnings, while a valid secondary sensor above
+the configured overtemperature limit can still trip the heater.
+
+If `use_humidity_sensor = true`, the Raspberry Pi hardware environment also uses
+`adafruit-circuitpython-sht31d`, which is already listed in `requirements.txt`.
+
+The fan is intentionally disabled by default. If testing later shows that a fan
+is needed, the program only switches it at fixed speed and can monitor a tach
+input; there is no PWM/frequency speed control.
+
 ## Select real hardware mode
 
 Edit the installed configuration:
@@ -183,15 +280,20 @@ mode = "scpi"
 
 Before starting hardware mode, verify:
 
-- PT100 wiring and calibration
+- all enabled PT100/MAX31865 channels and their chip-select pins
+- calibration of the control, monitor-air, ground-board, and spare PT100s
+- deliberate MAX31865 fault tests (disconnect/open-circuit tests)
+- SHT31-D address if humidity monitoring is enabled
 - heater resistance
 - maximum current
 - maximum power
 - power-supply command syntax
 - output-enable polarity
+- if a fan is enabled: fixed-speed wiring, tach GPIO, and required/not-required policy
 - independent thermostat
 - thermal fuse
 - electrical fuse
+- rack-enclosure bonding/protective-earth continuity
 
 Start the controller:
 
@@ -262,12 +364,3 @@ open docs/HV_Divider_Standalone_PID_System_Description.md
 
 A code editor such as VS Code can also preview Markdown. On GitHub, the files
 render automatically.
-
-## Troubleshooting interactive Matplotlib widgets
-
-If `%matplotlib widget` reports that `widget` is not a recognized backend,
-confirm that `ipympl` is installed:
-
-```bash
-conda activate hv-divider-pid
-mamba install -c conda-forge ipympl

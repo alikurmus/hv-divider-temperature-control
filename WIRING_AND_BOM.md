@@ -1,158 +1,314 @@
 # Proposed Wiring and Bill of Materials
 
+This document is the current prototype architecture after the first design
+review. Items explicitly marked **TBD** are not yet selected and should not be
+interpreted as procurement-ready choices.
+
 ## Functional block diagram
 
 ```text
-                         OUTSIDE / LOW-VOLTAGE COMPARTMENT
+                    19-INCH RACK ENCLOSURE / LOW-VOLTAGE REGION
 
-120 VAC
-   |
-   +--> regulated 24 V DC supply, about 2 A / 50 W
-             |
-             +--> input fuse --> NC hardware thermostat --> heater-enable relay
-             |                                                |
-             |                                      current-regulated driver
-             |                                   (0-3.3 V command, 0-1.05 A)
-             |                                                |
-             |                                             INA260
-             |                                                |
-             |                         twisted heater pair --> heater pad
-             |
-             +--> 24 V circulation fan (fixed low speed)
-             |
-             +--> 24-to-5 V DC/DC converter --> Raspberry Pi
-
-Raspberry Pi
-   |-- SPI --> MAX31865 --> four-wire PT100 inside enclosure
-   |-- I2C --> MCP4725 DAC --> analog command input of current driver
-   |-- I2C --> INA260 current/voltage/power monitor
-   |-- I2C --> 20x4 panel LCD
-   |-- GPIO17 --> hardware current-driver enable / relay
-   `-- GPIO27 --> fan enable
+External regulated 24 V DC
+          |
+          +--> input fuse --> NC hardware thermostat --> heater-enable stage
+          |                                                |
+          |                                      low-noise current driver
+          |                                      (FINAL MODEL: TBD)
+          |                                                |
+          |                                             INA260
+          |                                                |
+          |                         twisted heater pair --> heater/spreader
+          |
+          +--> filtered 5 V converter --> Raspberry Pi
+          |                                |
+          |                                |-- SPI --> MAX31865 #1 --> PT100 control air
+          |                                |-- SPI --> MAX31865 #2 --> PT100 monitor air
+          |                                |-- SPI --> MAX31865 #3 --> PT100 ground board
+          |                                |-- SPI --> MAX31865 #4 --> PT100 spare
+          |                                |-- I2C --> optional SHT31-D humidity sensor
+          |                                |-- I2C --> optional MCP4725 command DAC
+          |                                |-- I2C --> INA260 current/voltage monitor
+          |                                |-- I2C --> 20x4 panel LCD
+          |                                `-- GPIO --> heater enable
+          |
+          `--> OPTIONAL fixed-speed fan --> tach feedback GPIO
+                 (baseline prototype omits fan)
 ```
 
-For the first laboratory prototype, the MCP4725/current-driver combination can
-be replaced by a programmable laboratory supply with current programming and
-readback over USB or Ethernet. Select `hardware.mode="scpi"` in the software.
-This is the quickest way to test the thermal design before building the compact
-embedded current driver.
+For the first thermal prototype, the external current-driver path can be
+replaced by a programmable laboratory supply with current programming and
+readback over USB or Ethernet. Select `hardware.mode="scpi"`. This allows the
+thermal design to be characterized before committing to the final embedded
+low-noise current driver.
 
-## Recommended ratings
+## Mechanical enclosure
 
-### Heater and heater supply
+### Current candidate
 
-A practical starting heater is a nominal **24 V, 25 W silicone-rubber heater**.
-Its nominal resistance and current are:
+The current preferred enclosure is the **Hammond RMC-series 5U solid-panel
+RMCS190813BK1**:
 
-- `R = 24^2 / 25 = 23.04 ohm`
-- `I = 25 / 24 = 1.042 A`
+- 19-inch rack-mount format;
+- nominal 5U height;
+- 17 in body width;
+- 13 in depth;
+- approximately 8.73 in overall body height;
+- approximately 7.81 in inside-height clearance if the optional chassis panel
+  is installed.
 
-At the same resistance, approximate currents are:
+The divider is currently expected to lie horizontally.
 
-- 5 W: 0.466 A
-- 10 W: 0.659 A
-- 15 W: 0.807 A
-- 25 W: 1.042 A
+The earlier packaging estimate was approximately:
 
-The temperature controller will usually use less than the full heater rating;
-the extra capacity is for warm-up and changes in laboratory ambient
-conditions. Use a 24 V supply rated for at least 1.5 A for the heater alone.
-A **24 V, 2 A or larger supply** gives useful margin for the heater, fan, and
-conversion losses. The Raspberry Pi may instead use a separate approved 5 V
-supply to reduce conducted noise.
+- 80 mm divider diameter;
+- 40 mm nominal gap above;
+- 40 mm nominal gap below;
+- 10 mm insulation layer top;
+- 10 mm insulation layer bottom;
+- total approximately 180 mm.
 
-The heater must be bonded to an aluminum heat-spreader plate using the heater
-manufacturer's recommended pressure-sensitive adhesive or thermal adhesive.
-The spreader should heat the circulating air or enclosure wall uniformly and
-must not create a local hot spot on a divider board.
+The 5U enclosure appears geometrically plausible from that estimate, but the
+**40 mm gap is only a preliminary packaging assumption**. It is not a validated
+40 kV safety clearance. Final electrical clearance/creepage and insulation must
+be reviewed for the real electrode geometry, materials, environment, altitude,
+and applicable safety requirements.
 
-### Temperature sensor
+### 6U fallback
 
-Use a **four-wire PT100**, preferably Class A or better, with a mechanically
-stable probe or thin-film element. Place the control sensor near the thermal
-center of the divider, not directly on the heater or in the fan exhaust. Add a
-second independent PT100 near the opposite end to quantify spatial gradients.
+If the 5U layout is too tight after the real divider supports, connectors,
+insulation, feedthroughs, and bonding hardware are modeled, use a 6U RMC option
+instead. Hammond lists 6U solid-panel versions with 13 in and 15 in depths.
 
-A PT100 is about 110.9 ohm at 28 °C. Four-wire sensing removes the resistance of
-the lead wires from the measurement. Route the RTD leads separately from the
-heater and fan leads. Use shielded cable or two twisted pairs, and terminate the
-shield at the controller end only unless the grounding plan specifies
-otherwise.
+### Grounding/bonding warning
 
-### Temperature readout choice
+The Hammond RMC panels are powder coated. The manufacturer states that the
+panels are not automatically grounded to the frame. Therefore:
 
-**Prototype:** MAX31865 breakout, because it is inexpensive and directly
-supported by the supplied Python code. It has fine nominal resolution but its
-specified total accuracy is not sufficient by itself to certify an absolute
-±0.1 °C requirement. Calibrate it near 28 °C and use it for control.
+- do not assume electrical continuity through panel screws alone;
+- provide a deliberate chassis/protective-earth bonding scheme;
+- verify bond resistance after assembly;
+- determine the final grounding topology together with the HV/precision-output
+  grounding plan.
 
-**Acceptance/validation:** use an independent calibrated precision RTD readout,
-such as a laboratory PT100 logger or a custom 24-bit RTD front end, to verify
-that the physical enclosure actually meets the ripple requirement. The control
-sensor and validation sensor should be logged simultaneously.
+The enclosure is not hermetic as supplied. Gaskets/sealant could be added later
+if humidity measurements show that sealing is necessary.
 
-### Current command and measurement
+## Temperature-sensor architecture
 
-The MCP4725 provides only a low-power analog voltage. It must feed a separate
-current-regulated power stage. Required current-driver characteristics:
+Use **four separate four-wire PT100 channels**, each with its own MAX31865
+interface. The MAX31865 boards share SPI clock/data lines but need independent
+chip-select lines.
 
-- input command: 0 to 3.3 V;
-- output current: 0 to at least 1.05 A;
-- compliance voltage: at least 24 V;
-- monotonic, low-noise analog control;
-- output-enable input that defaults OFF;
-- current limit and thermal protection;
-- adequate heatsinking at the worst operating point.
+### PT100 roles
 
-Do not connect the heater directly to the MCP4725.
+| Role | Purpose | PID input? | Failure behavior |
+|---|---|---:|---|
+| `control_air` | Main air temperature near representative divider volume | Yes | Heater trips |
+| `monitor_air` | Independent verification of air regulation/gradient | No | Warning; overtemp can trip |
+| `ground_board` | Temperature actually reaching divider ground board | No | Warning; overtemp can trip |
+| `spare` | Redundancy/diagnostics | No | Warning; overtemp can trip |
 
-The INA260 or supply readback measures heater current and voltage. The display
-shows measured `P = V I`. If no readback is available, the program estimates
-power using `P = I^2 R_heater`.
+Automatic failover from `control_air` to another PT100 is deliberately **not**
+implemented. That policy should only be added once sensor placement and
+calibration equivalence have been demonstrated.
 
-### Display
+### MAX31865 fault handling
 
-A 20x4 I2C character LCD is adequate and easy to panel mount. It displays:
+The software reads the MAX31865 fault register for every channel. It recognizes
+fault flags corresponding to high/low threshold conditions, reference-input
+faults, RTD-input faults, and over/undervoltage status. Faults are cleared before
+a new transaction and checked after the temperature samples.
 
-1. filtered temperature and setpoint;
-2. commanded current;
-3. measured current and heater power;
-4. rolling peak-to-peak ripple and controller status.
+A fault on the PID control channel is a heater-off fault. Faults on monitor
+channels are logged/displayed as warnings so one failed monitor does not stop a
+healthy control loop. Any healthy monitor that sees an overtemperature can be
+configured to trip the heater.
 
-A larger TFT can replace it later without changing the PID logic.
+### PT100 wiring
+
+Use four-wire PT100s, preferably Class A or better, with mechanically stable
+probes or thin-film elements. Route the RTD leads separately from heater and
+possible fan wiring. Use shielded cable or two twisted pairs and make the shield
+termination part of the final grounding plan.
+
+Calibrate each PT100/readout channel near 28 °C against an independent reference
+thermometer. The configuration file has independent slope/offset corrections
+for the monitored channels and a separate control-sensor correction.
+
+## Humidity monitoring
+
+An optional **SHT31-D** I2C sensor is supported. It supplies relative humidity
+for logging/display and can generate a warning when a configurable RH threshold
+is exceeded.
+
+Humidity is not a PID input and does not automatically enable or disable a
+desiccant/inert-gas system.
+
+### Baseline humidity strategy
+
+The first prototype should characterize humidity while operating at 28 °C,
+slightly above typical room temperature. Do not make dry N2 or silica gel a
+required maintenance item unless measurements show they are necessary.
+
+Still to be decided from data:
+
+- no additional humidity control;
+- improved sealing/gaskets;
+- removable silica-gel pack;
+- dry-N2 fill/purge.
+
+## Fan strategy
+
+The baseline design uses **natural convection** and does not require a fan.
+This avoids an additional mechanical failure mode, maintenance item, and EMI
+source.
+
+If thermal mapping shows that forced circulation is needed, choose a fan with a
+separate tachometer/rotation-feedback output. The controller supports:
+
+- fixed on/off operation only;
+- tachometer edge monitoring;
+- startup grace period;
+- heater shutdown if a configured *required* fan stops.
+
+Do not use PWM/frequency speed modulation in this design unless later EMI tests
+explicitly show that it is acceptable. If a fan is needed, choose the lowest-EMI
+fixed-speed implementation that still provides adequate mixing.
+
+## Heater and heater supply
+
+A **24 V, approximately 25 W resistive heater** remains a practical
+characterization scale, not a final requirement. A nominal 24 V / 25 W heater
+has approximately:
+
+- `R = 24^2 / 25 = 23.04 ohm`;
+- `I = 25 / 24 = 1.042 A` at full rated power.
+
+Approximate current at that resistance:
+
+- 5 W: 0.466 A;
+- 10 W: 0.659 A;
+- 15 W: 0.807 A;
+- 25 W: 1.042 A.
+
+The final required heater power should be selected after fixed-power tests in
+the actual rack enclosure with the real insulation and divider mass.
+
+Bond the heater to an aluminum spreader or another deliberately engineered
+thermal distribution surface. Do not place a small concentrated heater directly
+against a precision divider board.
+
+## Current command and measurement
+
+### Prototype path: programmable supply
+
+A programmable laboratory supply is the preferred first test path because its
+current can be commanded and read back while the thermal behavior is measured.
+The final SCPI command strings are supply-specific and remain configurable.
+
+### Embedded path: DAC plus current driver
+
+The MCP4725 is only a low-power command DAC. It cannot drive the heater. It must
+feed a current-regulated power stage with:
+
+- command input compatible with the DAC range;
+- approximately 0-1.05 A output capability for the 25 W test heater;
+- normally-off hardware enable;
+- appropriate current limiting;
+- sufficiently low conducted/radiated noise for the divider measurement.
+
+**The final low-noise current driver is still TBD.** Do not commit the PCB or
+mechanical design around a particular driver until its noise has been measured
+with the divider readout active.
+
+Use an INA260 or the programmable supply's own readback to monitor current and
+voltage. Prefer measured power:
+
+`P_measured = V_measured * I_measured`.
+
+## Display
+
+A 20x4 I2C display is supported. It cycles between two pages.
+
+Main page includes:
+
+- filtered control temperature / setpoint;
+- measured or commanded heater current;
+- heater power;
+- second-air temperature;
+- ground-board temperature;
+- humidity;
+- fan status;
+- controller state.
+
+Diagnostic page includes:
+
+- spare PT100;
+- rolling ripple;
+- warning count;
+- reserved external slow-controls connection indicator.
+
+A `| / - \` heartbeat character changes on every display update. This gives a
+local indication that the controller process is alive even when the temperature
+and current are stable.
+
+The external slow-controls protocol is not selected yet. The display therefore
+reports `SC N/A` rather than pretending to know connection status. Once a real
+monitoring link is defined, the field can report `OK`/`DOWN`.
 
 ## Hardware safety components
 
-The following are not optional for unattended operation:
+The heater circuit should include independent hardware protection in addition
+to the Raspberry Pi software:
 
-- input fuse on the 24 V line;
-- heater branch fuse sized above normal current but below wire/driver limits;
-- normally-closed thermostat mounted at the heater/spreader, wired in series
-  with the heater power;
-- one-shot thermal fuse at a higher trip temperature;
-- normally-off relay or current-driver enable controlled by the Pi;
-- physical power switch;
-- strain relief and touch-safe terminals;
-- wire gauges rated for the maximum current and enclosure temperature;
-- fan guard;
-- nonflammable mounting materials near the heater;
-- independent commissioning thermometer.
+1. input fuse on the incoming 24 V line;
+2. separate heater-branch fuse;
+3. normally-closed mechanical thermostat/thermal cutoff near the hottest
+   plausible heater location;
+4. one-shot thermal fuse above the normal operating range;
+5. current driver that defaults off when the command signal or Pi disappears;
+6. hardware output-enable line that defaults off;
+7. strain relief and appropriate wire gauge;
+8. deliberate metal-enclosure bonding/protective-earth scheme;
+9. final HV-clearance/creepage review before energizing the divider at high
+   voltage.
 
-Suggested software cutoff for a 28 °C setpoint is 31 °C. The independent
-thermostat may be selected around 35-40 °C depending on component limits and
-the results of a thermal safety review. The software value is not a substitute
-for the hardware cutoff.
+The software cutoff is an additional layer, not the primary thermal safety
+device.
 
-## Physical placement in the HV-divider suitcase
+## Current bill of materials
 
-- Keep the Raspberry Pi, DAC, current driver, and display electronics outside
-  the HV region or in a separately shielded low-voltage compartment.
-- Keep the 24 V input and all internal electrical potentials below the agreed
-  50 V limit.
-- Separate heater/fan wiring from precision divider output wiring.
-- Use twisted pairs for heater current and RTD wiring.
-- Run the circulation fan continuously at fixed low speed; changing fan speed
-  inside the PID loop can introduce another control variable and temperature
-  gradients.
-- Leave a clear airflow path around the divider boards while respecting HV
-  creepage and clearance requirements.
+| Item | Quantity | Current choice/status |
+|---|---:|---|
+| Hammond RMC 5U solid enclosure | 1 | RMCS190813BK1 candidate; 6U fallback |
+| Raspberry Pi Zero 2 W or larger | 1 | Proposed |
+| Four-wire PT100 | 4 | 2 air + ground board + spare |
+| MAX31865 PT100 interface | 4 | One per PT100 |
+| SHT31-D humidity sensor | 1 | Optional but recommended for characterization |
+| 20x4 I2C LCD | 1 | Proposed |
+| Heater | 1 or distributed elements | ~24 V / 25 W characterization scale |
+| Aluminum heat spreader | 1 | Geometry TBD |
+| Programmable lab supply | 1 | Prototype heater drive, model TBD |
+| Low-noise embedded current driver | 1 | **TBD** |
+| MCP4725 DAC | 1 | Only if embedded analog driver is used |
+| INA260 monitor | 1 | Optional if supply provides adequate V/I readback |
+| Tachometer-output fan | 0 or 1 | **Not baseline; only if thermal data require it** |
+| Independent thermostat/cutoff | 1 | Required |
+| Thermal fuse | 1 | Required |
+| Electrical fuses | as required | Required |
+| 24 V external supply | 1 | Final current rating after heater choice |
+| 24-to-5 V converter or separate Pi supply | 1 | Noise testing required |
+
+## Still being decided
+
+- 5U versus 6U and final enclosure depth;
+- validated HV clearances/creepage and insulation geometry;
+- exact divider supports and feedthrough positions;
+- final enclosure sealing level;
+- whether natural convection is sufficient;
+- whether humidity requires desiccant or dry N2;
+- final low-noise current driver;
+- final heater wattage;
+- exact chassis/protective-earth bonding implementation;
+- external slow-controls protocol and connection-status implementation.

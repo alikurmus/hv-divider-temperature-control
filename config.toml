@@ -1,10 +1,10 @@
 [control]
-# Required operating point
+# Required operating point.
 setpoint_c = 28.0
 period_s = 1.0
 
-# Conservative starting PI gains. These MUST be tuned on the assembled box.
-# The output of the controller is requested heater power in watts.
+# Conservative starting PI gains. These MUST be tuned on the assembled enclosure.
+# The controller output is requested heater power in watts.
 kp_w_per_c = 1.0
 ki_w_per_c_s = 0.002
 kd_w_s_per_c = 0.0
@@ -17,7 +17,7 @@ max_current_a = 1.05
 heater_resistance_ohm = 23.04
 current_slew_a_per_s = 0.05
 
-# Filtering used by the controller. Raw and filtered temperatures are both logged.
+# Filtering used by the controller. Raw and filtered control temperatures are logged.
 temperature_filter_tau_s = 5.0
 derivative_filter_tau_s = 10.0
 integral_limit_c_s = 5000.0
@@ -28,13 +28,20 @@ minimum_valid_temperature_c = -20.0
 maximum_valid_temperature_c = 60.0
 sensor_timeout_s = 5.0
 startup_valid_samples = 5
+# A healthy monitor sensor above the overtemperature limit also shuts the heater off.
+trip_on_monitor_overtemperature = true
 
-# Ripple is reported as rolling peak-to-peak temperature over this window.
+# Ripple is reported as rolling peak-to-peak control temperature over this window.
 ripple_window_s = 600.0
 ripple_requirement_c = 0.10
 stable_error_band_c = 0.05
 
-# Determine these by comparison against a calibrated thermometer near 28 C.
+# Monitoring warnings. These do not by themselves stop regulation.
+air_sensor_disagreement_warning_c = 0.20
+humidity_warning_rh = 50.0
+
+# Control PT100 calibration. Determine by comparison against a calibrated
+# thermometer near 28 C.
 temperature_calibration_slope = 1.0
 temperature_calibration_offset_c = 0.0
 
@@ -43,16 +50,44 @@ temperature_calibration_offset_c = 0.0
 # analog current driver. Use "scpi" for a programmable current supply.
 mode = "simulate"
 
-# MAX31865 + PT100. Four-wire is recommended for the <0.1 C ripple goal.
-rtd_cs_pin = "D5"
+# All PT100 channels use MAX31865 interfaces sharing SPI clock/data lines.
+# Each interface requires a separate chip-select pin.
 rtd_wires = 4
 rtd_nominal_ohm = 100.0
 rtd_reference_ohm = 430.0
-rtd_samples_per_read = 5
-rtd_sample_spacing_s = 0.05
+rtd_samples_per_read = 3
+rtd_sample_spacing_s = 0.02
+
+# Sensor roles proposed after first design review:
+#   1) control_air   -> PID feedback
+#   2) monitor_air   -> independent air-temperature monitor
+#   3) ground_board  -> monitor temperature reaching the divider board
+#   4) spare         -> additional redundancy/diagnostics
+control_rtd_cs_pin = "D5"
+
+use_monitor_air_rtd = true
+monitor_air_rtd_cs_pin = "D6"
+monitor_air_calibration_slope = 1.0
+monitor_air_calibration_offset_c = 0.0
+
+use_ground_board_rtd = true
+ground_board_rtd_cs_pin = "D13"
+ground_board_calibration_slope = 1.0
+ground_board_calibration_offset_c = 0.0
+
+use_spare_rtd = true
+spare_rtd_cs_pin = "D19"
+spare_calibration_slope = 1.0
+spare_calibration_offset_c = 0.0
+
+# Optional SHT31-D relative-humidity monitor. Enable after the sensor is installed.
+# Humidity is logged and can raise a warning, but it does not directly drive PID.
+use_humidity_sensor = false
+humidity_i2c_address = 0x44
 
 # MCP4725 DAC. 0-3.3 V maps to 0-current_driver_full_scale_a.
 # The DAC cannot power the heater; it commands a separate current driver.
+# The final low-noise current driver has NOT yet been selected.
 dac_i2c_address = 0x60
 current_driver_full_scale_a = 1.05
 
@@ -60,17 +95,31 @@ current_driver_full_scale_a = 1.05
 use_ina260 = true
 ina260_i2c_address = 0x40
 
-# Normally-off heater enable and always-on circulation fan.
+# Normally-off heater enable.
 output_enable_gpio = 17
-fan_enable_gpio = 27
 enable_active_high = true
-fan_active_high = true
 
-# Optional panel display.
+# Baseline mechanical concept uses natural convection: no fan by default.
+# If thermal mapping later shows a fan is needed, this code only switches it
+# fully on/off at fixed speed. It never uses PWM/frequency speed control.
+use_fan = false
+fan_required = false
+fan_enable_gpio = 27
+fan_active_high = true
+# Set <0 to disable tach readback. If fan_required=true, use a real tach GPIO.
+fan_tach_gpio = 22
+fan_tach_pull_up = true
+fan_startup_grace_s = 3.0
+fan_tach_window_s = 2.0
+fan_min_edges_per_window = 2
+
+# Optional panel display. It includes a changing heartbeat character and cycles
+# between main-control and diagnostic pages.
 use_lcd = true
 lcd_i2c_address = 0x27
 lcd_columns = 20
 lcd_rows = 4
+lcd_page_period_s = 5.0
 
 # Generic programmable-supply configuration for hardware.mode="scpi".
 # Replace all strings with commands from the selected supply manual.
@@ -92,3 +141,4 @@ initial_temperature_c = 22.0
 thermal_capacitance_j_per_c = 3000.0
 thermal_conductance_w_per_c = 0.60
 sensor_noise_std_c = 0.005
+humidity_rh = 35.0

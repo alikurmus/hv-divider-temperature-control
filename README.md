@@ -2,10 +2,14 @@
 
 ## Purpose
 
-This package stabilizes the inside of the HV-divider enclosure at **28.0 °C**.
-The performance target is **less than 0.1 °C rolling peak-to-peak ripple** after
-the box reaches equilibrium. It is independent of Dripline/slow controls and
-runs as a Linux service on a Raspberry Pi.
+This repository develops a standalone temperature-control system for the HV
+voltage-divider enclosure. The current operating target is:
+
+- **setpoint:** 28.0 °C;
+- **steady-state target:** less than 0.1 °C rolling peak-to-peak ripple;
+- **controller:** continuous PI/PID, not bang-bang;
+- **primary actuator:** current-controlled resistive heater;
+- **local operation:** Raspberry Pi, independent of external slow controls.
 
 The controller follows the same physics as the notebook example *Heating a
 Room with Thermal Loss*:
@@ -17,131 +21,192 @@ hardware is current-controlled, the software converts power to current:
 
     I_command = sqrt(P_command / R_heater)
 
-The actual power shown on the display is read as `V*I` when current/voltage
-readback is available. Otherwise it is estimated as `I^2 R_heater`.
+Actual heater power is shown as `V*I` when voltage/current readback is
+available; otherwise it is estimated as `I^2 R_heater`.
 
-## Recommended physical architecture (based on discussion on July 31st)
+## Current mechanical concept
 
-Keep all digital/controller electronics in a shielded low-voltage compartment
-on the exterior or at one end of the suitcase, away from the HV divider and its
-low-level output wiring.
+The earlier suitcase concept has been replaced by a **horizontal 19-inch
+rack-mount enclosure** concept. The current preferred candidate is the Hammond
+RMC-series **5U solid-panel enclosure RMCS190813BK1** (17 in wide x 13 in deep,
+8.73 in overall height). A 6U RMC enclosure remains a fallback if the final HV
+clearance, insulation, connector, or mechanical-support layout needs more
+height or depth.
 
-- External regulated 24 V DC source, approximately 2 A / 50 W.
-- 24 V, approximately 25 W silicone-rubber resistive heater bonded to an
-  aluminum heat-spreader plate. Do not place the heater directly against the
-  precision divider boards.
-- Low-noise analog current driver, 0 to approximately 1.05 A, with a 0 to 3.3 V
-  command input and a hardware enable input. Alternative: a programmable DC
-  supply with current programming/readback over USB or Ethernet.
-- Four-wire PT100 RTD near the thermally representative center of the divider.
-- MAX31865 RTD interface for prototype/control use. Calibrate near 28 °C.
-- INA260 high-side current/voltage/power monitor, or the programmable supply's
-  own readback.
-- Raspberry Pi Zero 2 W or larger Raspberry Pi.
-- 20x4 I2C character LCD mounted on the top panel.
-- Small 24 V brushless fan run continuously at fixed speed for internal mixing.
-- Normally-off heater relay/current-driver enable.
-- Independent normally-closed thermostat and thermal fuse in series with the
-  heater, plus an appropriately rated fuse on the 24 V input.
+The present 5U layout estimate is only a packaging estimate. The previously
+used 40 mm HV gap is **not treated in this repository as a validated electrical
+safety clearance**. Final creepage/clearance, insulation, feedthrough, and
+mechanical spacing require an HV engineering review for the actual voltage,
+geometry, materials, environment, and applicable standards.
 
-A 5 W supply should not be selected without a thermal test. The box may consume
-only a few watts at equilibrium, but a 25 W heater provides warm-up and ambient
-change headroom. The software limits it to the configured maximum.
+The Hammond RMC panels are powder coated and the manufacturer notes that the
+panels are not automatically grounded to the frame. The final design therefore
+needs an explicit enclosure bonding/protective-earth plan; panel-to-panel
+continuity must not be assumed.
 
-## PT100 readout
+## Temperature sensing: four PT100 roles
 
-A PT100 is nominally 100 ohm at 0 °C. Near 28 °C it is approximately 110.9 ohm.
-The MAX31865 applies an excitation, measures the RTD resistance relative to a
-precision reference resistor, digitizes the ratio, and converts it to
-temperature. Four-wire wiring removes lead-wire resistance from the reading.
+The code now supports four four-wire PT100 channels, each with its own MAX31865
+interface and chip-select line:
 
-The code asks the Adafruit MAX31865 library for `sensor.temperature`, takes
-several samples, rejects non-finite values, and uses their median. It then
-applies a configurable calibration slope and offset. The old cryogenic 13-17
-ohm calibration polynomial is intentionally not used for this room-temperature
-PT100 application.
+1. **control_air** — the only sensor used by the PI/PID loop;
+2. **monitor_air** — a second air sensor used to independently verify regulation;
+3. **ground_board** — attached to the ground board to monitor the temperature
+   actually reaching the divider structure;
+4. **spare** — an additional monitored PT100 for redundancy/diagnostics.
 
-## Display
+The monitoring sensors are logged but are not used for automatic control-sensor
+failover. If the control sensor fails, the safe behavior is still to turn the
+heater off. Automatic failover can be added later only after placement,
+calibration, and failure-policy details are agreed.
 
-The four display rows are:
+Every MAX31865 channel now checks the device fault register after a read. A
+fault on the control PT100 trips the heater. Faults on monitoring PT100s are
+reported as warnings; a healthy monitoring sensor that exceeds the configured
+overtemperature threshold can also trip the heater.
 
-1. filtered temperature and 28 °C setpoint;
-2. commanded heater current;
-3. measured current and power;
-4. rolling temperature ripple and state (`START`, `RAMP`, `WAIT`, `STABLE`, or
-   `RIPPLE`).
+## Humidity monitoring
+
+The code supports an optional **SHT31-D relative-humidity sensor** on I2C.
+Humidity is monitoring-only: it is logged, displayed, and can raise a warning,
+but it does not directly alter the PID output.
+
+The baseline mechanical concept does **not** require a dry-N2 fill or silica-gel
+pack. The intent is first to characterize humidity while operating the divider
+slightly above room temperature. Whether additional sealing, desiccant, or an
+inert-gas fill is needed remains an open design decision based on measurements.
+
+## Fan philosophy
+
+A circulation fan is **not part of the baseline design**. The preferred first
+prototype uses natural convection to avoid an additional maintenance item,
+failure mode, and possible EMI source.
+
+If thermal mapping shows that forced circulation is necessary, the code
+supports an optional fixed-speed fan with tachometer feedback. The fan output is
+binary on/off only; this program does not use PWM or frequency-based speed
+control. If the fan is configured as required, loss of tachometer pulses trips
+the heater.
+
+## Heater drive and electrical readback
+
+The present software supports two paths:
+
+- `scpi`: programmable laboratory/current supply for early thermal testing;
+- `dac`: MCP4725 low-voltage analog command into an external current driver.
+
+The **final low-noise current-driver model has not yet been selected**. The
+MCP4725 is only a command DAC and cannot drive the heater directly. Selection
+of the final driver should follow measured noise/EMI requirements at the divider
+output.
+
+A nominal 24 V, 25 W heater remains a reasonable *test-scale* starting point,
+but the final heater rating should be set from fixed-power characterization of
+the actual rack enclosure rather than assumed in advance.
+
+## Local display
+
+A 20x4 I2C LCD is supported. It cycles between a control page and a diagnostic
+page and shows:
+
+- control temperature and setpoint;
+- commanded/measured current and power;
+- second-air and ground-board temperatures;
+- spare PT100 temperature;
+- humidity when installed;
+- ripple/status;
+- fan state when a tachometer-equipped fan is installed;
+- a continuously changing heartbeat character.
+
+The display reserves an `SC` field for future external slow-controls
+connectivity. At present it shows `N/A` because no external slow-controls
+protocol has been selected; standalone local regulation does not depend on that
+connection.
 
 ## Safety behavior
 
 The heater starts disabled. The controller requires several consecutive valid
-PT100 readings before enabling it. It turns the current to zero and disables
-the hardware output if:
+control-PT100 readings before enabling it. It turns the current to zero and
+disables the hardware output if:
 
-- the PT100 read fails or returns an invalid value;
-- temperature exceeds the configured software cutoff;
+- the control MAX31865/PT100 read fails or reports a hardware fault;
+- the control temperature is invalid or exceeds the configured software cutoff;
+- a healthy monitor sensor exceeds the cutoff when monitor trips are enabled;
+- a required fan reports no tachometer activity;
 - the process receives SIGTERM/SIGINT;
 - the program raises an unhandled exception;
 - the service exits or restarts.
 
-Software is not a substitute for the independent thermostat, thermal fuse, and
-fuse in the physical heater circuit.
+Software is not a substitute for the independent thermostat/thermal cutoff,
+thermal fuse, electrical fuse, and properly engineered HV enclosure.
 
-## Installation location
+## Recommended physical architecture for the first prototype
 
-Install the software on the Raspberry Pi at:
+- Hammond RMC-series 5U solid enclosure as the current mechanical candidate;
+- horizontal divider mounting;
+- external regulated 24 V source, sized after heater characterization;
+- distributed resistive heater on an aluminum spreader;
+- Raspberry Pi Zero 2 W or larger Pi in the low-voltage region;
+- four four-wire PT100s + four MAX31865 interfaces;
+- optional SHT31-D humidity sensor;
+- local 20x4 display;
+- current/voltage readback (INA260 or power-supply readback);
+- natural convection initially;
+- optional fixed-speed tachometer fan only if testing shows it is required;
+- independent hardware overtemperature protection and fusing.
+
+See `WIRING_AND_BOM.md` for the current hardware concept and
+`docs/FEEDBACK_RESPONSE.md` for what changed after the first design review and
+which items are still open.
+
+## Installation
+
+Software setup, Miniforge/Conda instructions, notebook use, simulation, and
+Raspberry Pi service installation are in [`HOW_TO_RUN.md`](HOW_TO_RUN.md).
+
+The installed Raspberry Pi locations are:
 
 - program: `/opt/hv-divider-pid/`
+- Conda environment: `/opt/hv-divider-pid/conda-env/`
 - configuration: `/etc/hv-divider-pid/config.toml`
 - CSV log: `/var/log/hv-divider-pid/controller.csv`
 - service: `/etc/systemd/system/hv-divider-pid.service`
 
-The Pi and current driver should be outside the HV volume or in a separated,
-shielded low-voltage compartment. Only the PT100, heater, and low-noise fan need
-to be inside the temperature-controlled volume.
-
-## First installation
-
-From this package directory on Raspberry Pi OS:
-
-```bash
-chmod +x install.sh
-./install.sh
-```
-
-First test the controller without hardware:
-
-```bash
-cd /opt/hv-divider-pid
-sudo -u pidbox .venv/bin/python standalone_hv_divider_pid.py \
-  --config /etc/hv-divider-pid/config.toml --simulate
-```
-
-Then edit `/etc/hv-divider-pid/config.toml`, select either `mode="dac"` or
-`mode="scpi"`, verify all current limits and the heater resistance, and start:
-
-```bash
-sudo systemctl start hv-divider-pid
-sudo journalctl -u hv-divider-pid -f
-```
-
 ## Commissioning and tuning
 
-Do not promise the 0.1 °C ripple from software alone. It depends on insulation,
-air mixing, sensor placement, heater distribution, power-supply noise, and the
+Do not assume the 0.1 °C ripple requirement is guaranteed by software alone.
+It depends on insulation, natural-convection gradients, sensor placement,
+heater distribution, ambient changes, power-source noise, and the enclosure's
 thermal time constants.
 
-1. Install the heater, fan, and at least one PT100. A second independent PT100
-   is strongly recommended to measure spatial gradients.
-2. With PID disabled, apply fixed powers such as 2 W, 5 W, and 10 W. Record the
-   temperature rise, settling time, and spatial gradients.
-3. Determine the heater resistance at operating temperature from measured V/I.
-4. Calibrate the control PT100 near 28 °C against a traceable thermometer.
-5. Start with `kd=0`, low `kp`, and low `ki`. Increase `kp` until warm-up is
-   acceptably fast without oscillation. Increase `ki` only enough to remove the
-   remaining steady-state error.
-6. Evaluate rolling peak-to-peak ripple only after the full enclosure has
-   reached thermal equilibrium. Use the independent calibrated sensor for the
-   acceptance measurement.
+Recommended sequence:
 
-The example gains in `config.toml` are deliberately conservative placeholders;
-they are not guaranteed tuning constants for the final enclosure.
+1. Install and calibrate all PT100 channels near 28 °C.
+2. Log both air sensors and the ground-board sensor with the heater off.
+3. Apply several fixed heater powers and map spatial gradients with **no fan**.
+4. Measure humidity during warm-up and steady operation.
+5. Decide whether natural convection is adequate. Add a fan only if the data
+   show unacceptable gradients or time constants.
+6. Tune PI with `kd=0` initially.
+7. Validate ripple using the independent monitoring PT100/readout.
+8. Repeat with the divider measurement electronics active and check for heater,
+   fan (if fitted), display, and digital-control EMI.
+
+The example gains in `config.toml` are commissioning placeholders, not final
+validated tuning constants.
+
+## Still being decided
+
+The following are intentionally not presented as final choices:
+
+- exact 5U versus 6U enclosure and final rack depth;
+- validated 40 kV creepage/clearance and insulation geometry;
+- exact divider mounting/support arrangement inside the enclosure;
+- final low-noise current-driver or programmable-supply model;
+- final heater power/rating after enclosure thermal tests;
+- whether a fan is necessary at all;
+- whether humidity measurements justify sealing, silica gel, or dry N2;
+- exact external slow-controls protocol and therefore the real `SC` connection
+  indicator implementation;
+- final enclosure bonding/grounding implementation through the powder-coated
+  Hammond panels.
