@@ -21,28 +21,28 @@ The controller is conceptually based on the notebook example *Heating a Room
 With Thermal Loss*. The enclosure is modeled as a thermal mass exchanging heat
 with its surroundings:
 
-\[
+\begin{equation}
 C\frac{dT}{dt}=P_{\rm heater}-G(T-T_{\rm ambient}).
-\]
+\end{equation}
 
 The software controller requests heater power, while the physical actuator is
 current controlled:
 
-\[
+\begin{equation}
 P_{\rm command}=K_P e+K_I\int e\,dt-K_D\frac{dT}{dt},
-\]
+\end{equation}
 
 with
 
-\[
+\begin{equation}
 e=T_{\rm set}-T_{\rm control},
-\]
+\end{equation}
 
 and
 
-\[
+\begin{equation}
 I_{\rm command}=\sqrt{\frac{P_{\rm command}}{R_{\rm heater}}}.
-\]
+\end{equation}
 
 The first hardware tuning should use PI control with `kd=0`.
 
@@ -147,9 +147,9 @@ calibration, and thermal response, and that policy has not yet been established.
 All channels should be compared against an independent reference thermometer
 near 28 °C. The code supports slope/offset corrections:
 
-\[
+\begin{equation}
 T_{\rm corrected}=mT_{\rm measured}+b.
-\]
+\end{equation}
 
 The control PT100 has its own calibration parameters. Each monitor PT100 has
 separate calibration parameters in `config.toml`.
@@ -259,15 +259,15 @@ a fan is necessary.
 A 24 V / approximately 25 W resistive heater remains a useful characterization
 scale. For a nominal 24 V, 25 W heater:
 
-\[
+\begin{equation}
 R=\frac{24^2}{25}=23.04\ \Omega,
-\]
+\end{equation}
 
 and full-power current is approximately:
 
-\[
+\begin{equation}
 I=\frac{25}{24}=1.042\ \mathrm{A}.
-\]
+\end{equation}
 
 Approximate operating points at 23.04 Ω:
 
@@ -322,15 +322,15 @@ accepted before an EMI/noise test.
 
 Prefer measured power:
 
-\[
+\begin{equation}
 P_{\rm measured}=V_{\rm measured}I_{\rm measured}.
-\]
+\end{equation}
 
 If direct voltage readback is not available, estimate:
 
-\[
+\begin{equation}
 P_{\rm estimated}=I^2R_{\rm heater}.
-\]
+\end{equation}
 
 The code supports INA260 readback for the embedded path or direct readback from
 a programmable supply.
@@ -438,9 +438,9 @@ Each cycle performs:
 
 The reported ripple is rolling peak-to-peak control-air temperature:
 
-\[
+\begin{equation}
 \Delta T_{\rm pp}=T_{\max}-T_{\min}
-\]
+\end{equation}
 
 within the configured window, currently 600 s.
 
