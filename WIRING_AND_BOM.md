@@ -218,7 +218,11 @@ feed a current-regulated power stage with:
 - appropriate current limiting;
 - sufficiently low conducted/radiated noise for the divider measurement.
 
-**The final low-noise current driver is still TBD.** Do not commit the PCB or
+**The final low-noise current driver is still TBD.** A proposal (2026-11-02) is in
+[`docs/HEATER_AND_CURRENT_DRIVER.md`](docs/HEATER_AND_CURRENT_DRIVER.md): a
+linear op-amp/MOSFET current sink on the 24 V rail, commanded by the MCP4725,
+with a ~20 Ω heater. The procurement list is [`ORDER_LIST.md`](ORDER_LIST.md).
+Do not commit the PCB or
 mechanical design around a particular driver until its noise has been measured
 with the divider readout active.
 

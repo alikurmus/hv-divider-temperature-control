@@ -1,0 +1,308 @@
+# Simplest Design That Still Supports Continuous PID
+
+Status: **proposal, 2026-11-03**. This is a reduced version of
+[`SYSTEM_DESIGN_AND_WIRING.md`](SYSTEM_DESIGN_AND_WIRING.md) for a 28 °C
+setpoint only a few kelvin above room temperature. It uses the Phase-1 heater
+only: no Kapton and no aluminum spreader plate. 
+
+## Verdict: is this the simplest design that can work?
+
+**Yes, with two conditions:**
+
+1. **Bolt the two heater resistors directly to the inside of the enclosure's
+   aluminum back wall.** The wall is the spreader. A thin aluminum panel
+   spreads heat roughly 15–20 cm around each resistor (`√(k·t/h)` with
+   k ≈ 180 W/(m·K), t ≈ 1.5–2 mm, h ≈ 8–10 W/(m²·K)). Two resistors at ¼ and ¾
+   of the stack length cover most of the wall. Do **not** hang the resistors in
+   free air: an HS25 is rated only 9 W in free air and would become a hot spot
+   next to the divider.
+2. **Cap the heater at about 12 W and fit an external foam jacket,** unless the
+   first bare-box test (step 6 of the checklist below) shows the box loses
+   little heat. Without a spreader, the heat leaves through two small spots.
+   - With the jacket, holding 28 °C needs only ~4–6 W, and the wall next to
+     the resistors stays well under 45 °C.
+   - With a bare box (estimated 15–40 W needed), the resistor spots run hot
+     and the gradients grow.
+   - Foam is cheaper and simpler than a machined spreader plate, and it also
+     slows how fast room-temperature swings reach the divider.
+
+Anything simpler gives up one of the things a PID needs:
+
+| If we also removed… | we would lose |
+|---|---|
+| The linear, programmable DC current source | Continuous control. We'd be back to on/off or PWM switching. |
+| The control PT100 and its MAX31865 | The feedback signal |
+| The Raspberry Pi | The PID calculation and logging. A panel PID controller with an analog output plus an analog-programmable supply could replace it, but that is not simpler or cheaper. |
+| The thermostat, thermal fuse and fuse | Protection when the software or the current source fails |
+| Metal contact for the resistors | A safe resistor temperature |
+
+---
+
+## The design
+
+```text
+ OUTSIDE                                                     INSIDE the divider enclosure (foam jacket outside)
+┌──────────────────────────────┐                            ┌─────────────────────────────────────────────────┐
+│ Raspberry Pi 4 (USB-C power) │                            │ back wall (aluminum):                           │
+│   SPI ─ MAX31865 #1 ◄────────┼──── PT100 cable ───────────┼── S1 air sensor (PID input)                     │
+│       ─ MAX31865 #2 ◄────────┼──── PT100 cable ───────────┼── S3 ground-board sensor (monitor)              │
+│   Ethernet                   │                            │                                                 │
+│      │                       │                            │   R1 10 Ω ──── R2 10 Ω   bolted to the wall,    │
+│ linear bench supply ── + ────┼─ fuse ─── heater pair ─────┼─► thermal fuse ─ thermostat ─ R1 ─ R2 ─┐       │
+│  (CC mode, SCPI over LAN) ◄ −┼────────── heater pair ◄────┼─────────────────────────────────────────┘       │
+└──────────────────────────────┘                            │ divider stack centered, parallel to back wall   │
+                                                            └─────────────────────────────────────────────────┘
+```
+
+Each second the Pi:
+
+1. reads S1;
+2. runs PI;
+3. converts the requested power to a current, `I = √(P/R)`;
+4. sends that current to the supply as one SCPI command;
+5. reads the actual current and voltage back.
+
+The supply holds that DC current steadily until the next update. Nothing
+switches on and off.
+
+### Components and why each is needed
+
+| Component | Qty | Why it can't be dropped |
+|---|---:|---|
+| Raspberry Pi 4 + microSD + USB-C supply | 1 | Runs PI, safety checks and logging (existing code, no changes) |
+| MAX31865 + 4-wire PT100, air (S1) | 1 | PID feedback |
+| MAX31865 + 4-wire PT100, ground board (S3) | 1 | Not strictly required for PID, but it measures the divider itself, which the tempco work needs. The only optional item worth keeping. |
+| 10 Ω / 25 W aluminum-housed resistors, bolted to the back wall | 2 | Heater (20 Ω total) |
+| Linear programmable DC supply | 1 | Continuous, low-noise DC current with readback |
+| NC thermostat (opens 49 °C) on the wall next to a resistor | 1 | Hardware over-temperature cut-off |
+| Thermal fuse 72 °C on the wall next to the other resistor | 1 | Last-resort one-shot cut-off |
+| 1.6 A time-lag fuse at the supply output | 1 | Wiring short protection |
+| ~25 mm closed-cell foam jacket | ~0.8 m² | Keeps the power low (see the verdict) |
+
+### Removed from the full design, and why that's acceptable here
+
+| Removed | Why it's acceptable at 28 °C |
+|---|---|
+| Kapton heater (Phase 2) | ~5 W steady-state through two wall-mounted resistors is enough. Natural convection and the aluminum wall distribute it. |
+| Aluminum spreader plate | The enclosure's back wall does the spreading. The 12 W power cap keeps the spots near the resistors cool. |
+| DIY current-driver board, MCP4725 DAC, INA260, relay | The bench supply is the current source, sets the current, measures V and I, and turns its output off on command (`mode = "scpi"`, already in the code). |
+| External 24 V supply and 24→5 V converter | The supply runs from mains *outside* the box. The Pi uses its own USB-C adapter. Only DC at ≤ 16 V enters the divider box. |
+| Sensors S2 (second air) and S4 (heater wall) | Not needed for PID. Leaving out S4 also avoids the software trip-limit change (TODO S1). |
+| LCD, level shifter, humidity sensor, fan | The supply's front panel shows V and I. The Pi logs to CSV and the journal over SSH. |
+| Separate controller enclosure | The Pi and two MAX31865 boards fit in one small case next to the supply. |
+
+---
+
+## Heater details
+
+- **Resistors:** 2 × 10 Ω, 25 W aluminum-housed wirewound in series:
+  - Ohmite HS25 10R J (cheapest);
+  - Vishay Dale RH02510R00FE02 (1 %).
+
+  The HS25 is rated 25 W on a 535 cm² × 1 mm aluminum heatsink, 9 W in free
+  air, with a 200 °C maximum hot spot. Here each one sees ≤ 6 W, on a larger
+  panel.
+- **Mounting:**
+  - Two M3 screws each, with a thin layer of thermal compound.
+  - The Hammond panels are powder coated: scrape the coating off under each
+    resistor, or accept a few kelvin of extra rise.
+  - The housing is insulated from the element (2500 V rms proof), so bolting
+    to the grounded wall is fine.
+- **Placement:** inside the back wall at about ¼ and ¾ of the board-stack
+  length, at mid-height, with the stack parallel to the wall (as in the 3D
+  sketch).
+  - Clamp the thermostat about 3–5 cm from R1 and the thermal fuse about
+    3–5 cm from R2.
+  - Sleeve the solder terminals with heat-shrink.
+  - Twist the heater leads together along the wall.
+- **Power cap:** the supply's voltage limit is set to **16.0 V**, so the
+  current can never exceed 16 V / 20 Ω = 0.8 A, i.e. 12.8 W, whatever the
+  software asks for. The software limit is set just below that (12 W, 0.77 A).
+- **Warm-up:** with an estimated heat capacity of 5–10 kJ/K, 12 W raises the
+  box by 6 K in roughly 1–2 h. That fits the "~2 h to equilibrium" target in
+  the meeting notes.
+
+## Current source
+
+### Option A: linear bench supply (simplest; recommended for this design)
+
+Use a programmable **linear** DC supply on the LAN, e.g. Siglent SPD1305X
+(30 V / 5 A, linear, LAN + USB, SCPI, ~$328). If the lab already has a
+LAN-programmable linear supply, use that. We need:
+
+- ≥ 16 V and ≥ 1 A;
+- a current set-point and readback over SCPI.
+
+**This is the one case where SCPI is the right answer.** The Pi talks to the
+supply over the network, and no electronics need to be built. Supply settings:
+
+- Voltage limit 16.0 V; OVP (over-voltage protection) about 17 V if
+  available.
+- Output **off** at power-on (check the menu).
+- Output floating: leave the earth terminal unconnected.
+
+Connect the supply and the Pi through a small Ethernet switch, or put both on
+the lab network.
+
+### Option B: DIY linear sink (cheapest; same everything else)
+
+If we"d rather not buy a supply, use the linear sink from
+[`HEATER_AND_CURRENT_DRIVER.md`](HEATER_AND_CURRENT_DRIVER.md) §3 with
+`mode = "dac"`. It needs an MCP4725, the driver board and a 24 V adapter.
+
+For this low-power design:
+
+- change R1 to **31.6 kΩ**, so the full scale is ≈ 0.79 A (a hardware power
+  cap of ≈ 12.5 W);
+- set `current_driver_full_scale_a = 0.79`;
+- the relay and INA260 may be omitted.
+
+The cost is one small board to build and a scope check.
+
+---
+
+## Wiring and pins (Option A)
+
+| Raspberry Pi pin | Function | Connects to |
+|---:|---|---|
+| 1 | 3V3 | MAX31865 #1 Vin, #2 Vin |
+| 6, 9 | GND | MAX31865 #1 GND, #2 GND |
+| 19 (GPIO10, MOSI) | SPI data out (shared) | both MAX31865 SDI |
+| 21 (GPIO9, MISO) | SPI data in (shared) | both MAX31865 SDO |
+| 23 (GPIO11, SCLK) | SPI clock (shared) | both MAX31865 SCK |
+| 29 (GPIO5) | Chip select for S1, air (PID) | MAX31865 #1 CS |
+| 33 (GPIO13) | Chip select for S3, ground board | MAX31865 #2 CS |
+| Ethernet | SCPI to the supply, SSH, logging | switch → supply LAN |
+
+These are the default `config.toml` pin assignments, so pins 31 and 35 stay
+free if S2 or S4 is added later.
+
+MAX31865 terminals:
+
+- **F+ and RTD+:** the two leads from one end of the PT100.
+- **RTD− and F−:** the two leads from the other end.
+- Leave the board jumpers as shipped (4-wire).
+- Cables are Belden 8723: one pair for F+/F−, one pair for RTD+/RTD−. Ground
+  the shield at the Pi end only.
+
+Heater circuit:
+
+```text
+supply CH1 + ─ fuse 1.6 A T ─ heater pair ─► thermal fuse 72 °C ─ thermostat NC 49 °C ─ R1 10 Ω ─ R2 10 Ω ─┐
+supply CH1 − ◄──────────────────── heater pair ◄──────────────────────────────────────────────────────────┘
+```
+
+Expect ~20 Ω between the two heater-pair conductors at the box, and > 100 MΩ
+from the heater circuit to the chassis.
+
+Cable entry: cable glands are simplest. Use connectors instead if the box will
+be shipped.
+
+## Configuration
+
+Set these in `/etc/hv-divider-pid/config.toml`. Everything else stays at the
+defaults.
+
+```toml
+[control]
+heater_resistance_ohm = 20.0        # measure 4-wire at the box
+max_power_w = 12.0
+max_current_a = 0.77
+
+[hardware]
+mode = "scpi"
+control_rtd_cs_pin = "D5"           # S1 air
+use_monitor_air_rtd = false
+use_ground_board_rtd = true         # S3
+ground_board_rtd_cs_pin = "D13"
+use_spare_rtd = false
+use_humidity_sensor = false
+use_fan = false
+use_lcd = false
+visa_resource = "TCPIP0::192.168.1.50::INSTR"   # the supply's IP
+scpi_set_current = "CH1:CURRent {value:.3f}"
+scpi_output_on = "OUTPut CH1,ON"
+scpi_output_off = "OUTPut CH1,OFF"
+scpi_measure_current = "MEASure:CURRent? CH1"
+scpi_measure_voltage = "MEASure:VOLTage? CH1"
+```
+
+No code changes are needed.
+
+- **Unused enable pin:** the code still drives GPIO17, the heater-enable
+  output. Nothing is connected to it, which is harmless.
+- **VISA resource form:** use the `...::INSTR` (VXI-11) form. A raw-socket
+  resource (`::5025::SOCKET`) would also need a read termination set in the
+  code.
+
+## Parts list (Option A)
+
+| Item | Qty | Part | ~$ |
+|---|---:|---|---:|
+| Raspberry Pi 4 Model B 2 GB, passive case, 32 GB microSD, USB-C 15 W supply | 1 set | see ORDER_LIST A1–A3, A6 | 100 |
+| MAX31865 breakout | 3 | Adafruit #3328 (2 + 1 spare) | 45 |
+| PT100 4-wire Class A probe, 1/8" × 3" | 1 | Evolution Sensors P4A-TBSX-125-PX-3-PFXX-40-STWL | 65 |
+| PT100 4-wire Class A surface sensor | 1 | Omega SA1-RTD-4W | 145 |
+| Shielded 2-pair cable | 10 m | Belden 8723 | 20 |
+| 10 Ω 25 W aluminum-housed resistor | 2 (+1 spare) | Ohmite HS25 10R J or Dale RH02510R00FE02 | 18–80 |
+| NC thermostat, opens 49 °C | 1 | Sensata/Airpax O53GAB120A-105Y (check stock) | 42 |
+| Thermal fuse, 72 °C | 2 | Cantherm SDF DF072S (verify the DC rating) | 2 |
+| Fuse 1.6 A T + inline holder | 1 + 1 | Littelfuse 021801.6MXP | 5 |
+| 18 AWG heater wire, cable glands, thermal compound, heat-shrink | 1 set | any | 30 |
+| Closed-cell foam, 25 mm | ~0.8 m² | any flame-retardant | 50 |
+| Small Ethernet switch + 2 patch cables | 1 | any (skip if on the lab network) | 20 |
+| **Linear programmable supply** | 1 | Siglent SPD1305X (skip if the lab has one) | 328 |
+| **Total** | | | **≈ $870–950**, or **≈ $540–620** without buying the supply |
+
+Option B instead of the supply: MCP4725 (#935), the driver parts (ORDER_LIST
+D1–D9), and the Mean Well GST90A24-P1M with a cord. That comes to roughly
+$80–100, for a total of **≈ $620–720**.
+
+## Build and commissioning checklist
+
+Commands are in [`HOW_TO_RUN.md`](../HOW_TO_RUN.md), Part B.
+
+- [ ] 1. Mount R1, R2, the thermostat and the thermal fuse on the back wall.
+  Wire them in series.
+  - Done when: ~20 Ω end to end and > 100 MΩ to the chassis.
+- [ ] 2. Install S1 (air, mid-height, between the wall and the stack, at
+  mid-length) and S3 (ground board only).
+  - Done when: both read ~108–112 Ω at room temperature.
+- [ ] 3. Set up the supply: 16.0 V limit, output off at power-on, IP address
+  noted, `*IDN?` answered from the Pi (HOW_TO_RUN B7; use `CH1:VOLTage 16`
+  instead of the 24 V in that example).
+- [ ] 4. Install the Pi and check it: B2–B5.
+  - Done when: the simulation runs.
+- [ ] 5. Bring up the sensors with the current locked at zero: B6 step 1
+  (`max_current_a = 0`).
+  - Done when: both sensors read correctly and unplugging S1 trips the
+    heater.
+- [ ] 6. **Bare-box test, no jacket:** fixed 10 W (B6 step 3 with
+  `power_bias_w = 10`) until equilibrium. Compute `G = 10 W / ΔT_air`.
+  - If G ≤ 1 W/K, we can skip the jacket.
+  - If G is larger, fit the jacket and repeat the test at 5 W.
+  - During the 10 W run, check the wall next to each resistor with a
+    thermocouple or a temporarily taped-on PT100. It should stay below
+    ~45 °C.
+- [ ] 7. Calibrate S1 and S3 near 28 °C against the reference thermometer.
+- [ ] 8. Close the loop and tune the PI: B6 step 4. Use
+  `power_bias_w = G × (28 − T_room)`.
+  - Done when: S1 peak-to-peak < 0.1 °C in every 600 s window for 12 h, with
+    the S3 drift recorded.
+- [ ] 9. Run it as a service (B8). Reboot once to confirm it resumes.
+- [ ] 10. Noise check with the divider readout running: heater off vs on, and
+  0.2 / 0.5 / 0.77 A.
+
+## When to add things back
+
+
+| What the tests show | Add |
+|---|---|
+| Wall near a resistor > 45 °C at the needed power, or a large S1–S3 difference | Two more resistors along the wall (4 × 5 Ω in series), or the aluminum spreader plate |
+| The divider's front-to-back gradient matters for the tempco result | S2 second air sensor (MAX31865 on pin 31), then decide on the spreader or a floor heater |
+| The supply's noise shows up on the divider readout | The DIY linear sink (Option B), which runs from a 24 V adapter |
+| We want a local display on the box (temperature, setpoint, current, heartbeat character) | 20×4 I²C LCD + 3.3↔5 V level shifter (~$20) on Pi pins 3 and 5, then `use_lcd = true`. No code change. Works with either current source. |
+| The box will run unattended and we want software to watch the heater wall too | S4 surface PT100 on the wall next to a resistor (MAX31865 CS on pin 35) plus the TODO S1 per-sensor trip limit (a code change). Without it, the thermostat, thermal fuse and the supply's 16 V cap already protect the wall in hardware. |
+
+Nothing in this design is thrown away by any of these upgrades.
+
