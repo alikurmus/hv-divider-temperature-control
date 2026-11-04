@@ -107,7 +107,7 @@ The Pi is still the better fit here:
 An analog-output Omega controller is a reasonable independent backup, not a
 requirement.
 
-### What SCPI is, and whether you need it
+### What is SCPI?
 
 SCPI ("Standard Commands for Programmable Instruments") is just the text
 command language that lab instruments understand over LAN or USB, for example
@@ -120,7 +120,7 @@ The software has two interchangeable ways to output the heater current:
 | **`"dac"`** | Pi → MCP4725 DAC → **our linear driver** → heater | **The final design. Use this.** |
 | `"scpi"` | Pi → LAN → programmable bench power supply → heater | Only to start thermal tests before the driver is built, or as an A/B reference during noise tests |
 
-If you are not buying a bench supply, ignore SCPI entirely. Nothing else in the
+If we are not buying a bench supply, ignore SCPI entirely. Nothing else in the
 design depends on it.
 
 ---
