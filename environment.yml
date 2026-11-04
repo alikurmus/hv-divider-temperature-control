@@ -1,14 +1,15 @@
 name: hv-divider-pid
+# conda-forge only. The Anaconda "defaults" channel is intentionally omitted
+# (Miniforge does not use it, and mixing channels slows/complicates solving).
+# Do not commit a machine-specific "prefix:" line.
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - ipykernel
-  - jupyterlab
-  - matplotlib
-  - numpy
   - python=3.11
   - pip
+  - numpy
+  - matplotlib
+  - jupyterlab
+  - ipykernel
   - ipywidgets
   - ipympl
-prefix: /Users/ali/opt/miniforge3/envs/hv-divider-pid

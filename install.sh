@@ -14,6 +14,12 @@ if [[ ${EUID} -eq 0 ]]; then
     exit 1
 fi
 
+# Miniforge/conda-forge only support 64-bit ARM on the Pi.
+if [[ "$(uname -m)" != "aarch64" ]]; then
+    echo "Use 64-bit Raspberry Pi OS (aarch64); this system reports $(uname -m)." >&2
+    exit 1
+fi
+
 INSTALL_USER=${SUDO_USER:-$USER}
 INSTALL_HOME=$(getent passwd "$INSTALL_USER" | cut -d: -f6)
 
@@ -48,7 +54,7 @@ fi
 echo "Using Conda executable: $CONDA_BIN"
 
 sudo apt-get update
-sudo apt-get install -y i2c-tools python3-dev
+sudo apt-get install -y i2c-tools python3-dev libusb-1.0-0
 
 # Enable hardware buses on Raspberry Pi OS.
 sudo raspi-config nonint do_i2c 0
@@ -87,8 +93,9 @@ sudo systemctl daemon-reload
 
 # Do not automatically enable or start heater control during installation.
 echo "Installed with Conda environment: $ENV_DIR"
+echo "Reboot once so the SPI and I2C interfaces are active: sudo reboot"
 echo "Edit $CONFIG_DIR/config.toml and test simulation mode first:"
-echo "  sudo -u pidbox $ENV_DIR/bin/python $APP_DIR/standalone_hv_divider_pid.py --config $CONFIG_DIR/config.toml --simulate"
+echo "  cd /tmp && sudo -u pidbox $ENV_DIR/bin/python $APP_DIR/standalone_hv_divider_pid.py --config $CONFIG_DIR/config.toml --simulate"
 echo "After hardware commissioning:"
 echo "  sudo systemctl start hv-divider-pid"
 echo "  sudo systemctl enable hv-divider-pid"

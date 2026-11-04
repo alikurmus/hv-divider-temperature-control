@@ -1,14 +1,24 @@
-# Hardware libraries for Raspberry Pi OS Bookworm / Python 3.11
+# Hardware libraries for the Raspberry Pi controller environment
+# (64-bit Raspberry Pi OS Bookworm or Trixie, Python 3.11 conda env).
+# Every package below has an aarch64/cp311 wheel, so no compiler is needed.
 adafruit-blinka
+# Blinka >= 10 drives Raspberry Pi GPIO through libgpiod but does not install
+# it; a non-interactive service fails at "import board" without this line.
+gpiod>=2.2.2,<3
 adafruit-circuitpython-max31865
 adafruit-circuitpython-sht31d
 adafruit-circuitpython-mcp4725
 adafruit-circuitpython-ina260
 gpiozero
+# Pin backend for gpiozero (heater-enable relay, optional fan). Required on
+# Pi 5; also used on Pi 4. See LG_WD in hv-divider-pid.service.
+lgpio
 RPLCD
 smbus2
 pyvisa
 pyvisa-py
 pyserial
+# Only needed for USB-TMC instruments in hardware.mode="scpi" (LAN/VXI-11 needs nothing extra).
+pyusb
 # Python <3.11 only
 tomli; python_version < "3.11"

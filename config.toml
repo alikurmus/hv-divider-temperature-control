@@ -88,7 +88,11 @@ humidity_i2c_address = 0x44
 # MCP4725 DAC. 0-3.3 V maps to 0-current_driver_full_scale_a.
 # The DAC cannot power the heater; it commands a separate current driver.
 # The final low-noise current driver has NOT yet been selected.
-dac_i2c_address = 0x60
+# Adafruit MCP4725 breakout (#935) defaults to 0x62 (0x63 with A0 high).
+# SparkFun/other MCP4725 boards are often 0x60. Confirm with: i2cdetect -y 1
+dac_i2c_address = 0x62
+# Set to the AS-BUILT driver full scale (current at DAC = 3.3 V). For the
+# reference linear sink in docs/HEATER_AND_CURRENT_DRIVER.md this is 1.32 A.
 current_driver_full_scale_a = 1.05
 
 # Optional high-side current, voltage, and power readback.

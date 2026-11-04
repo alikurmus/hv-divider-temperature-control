@@ -8,6 +8,10 @@ User=pidbox
 Group=pidbox
 SupplementaryGroups=gpio spi i2c
 WorkingDirectory=/opt/hv-divider-pid
+# lgpio (gpiozero's pin backend) creates notification FIFOs in its working
+# directory. /opt is read-only under ProtectSystem=strict, so point it at
+# the service's private, writable /tmp.
+Environment=LG_WD=/tmp
 ExecStart=/opt/hv-divider-pid/conda-env/bin/python /opt/hv-divider-pid/standalone_hv_divider_pid.py --config /etc/hv-divider-pid/config.toml
 Restart=on-failure
 RestartSec=5
