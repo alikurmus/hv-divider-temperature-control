@@ -156,7 +156,7 @@ thermal fuse, electrical fuse, and properly engineered HV enclosure.
 - independent hardware overtemperature protection and fusing.
 
 See `WIRING_AND_BOM.md` for the current hardware concept and
-`docs/FEEDBACK_RESPONSE.md` for what changed after the first design review and
+`docs/2026-08-11_feedback_response.md` for what changed after the first design review and
 which items are still open.
 
 ## Installation
