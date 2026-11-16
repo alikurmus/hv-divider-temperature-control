@@ -25,6 +25,6 @@ controller.csv
 # Local configuration overrides and secrets
 config.local.toml
 .env
-./docs/img
+
 
 ./Claude_outputs
