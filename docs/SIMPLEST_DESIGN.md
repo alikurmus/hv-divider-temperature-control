@@ -99,6 +99,8 @@ switches on and off.
 
 ## Heater details
 
+![The heater resistors: part, mounting and placement](img/heater_resistors.svg)
+
 - **Resistors:** 2 × 10 Ω, 25 W aluminum-housed wirewound in series:
   - Ohmite HS25 10R J (cheapest);
   - Vishay Dale RH02510R00FE02 (1 %).
@@ -130,6 +132,8 @@ switches on and off.
 
 ### Option A: linear bench supply (simplest; recommended for this design)
 
+![Simplest design, Option A: Pi, bench supply and heater](img/bench_supply_schematic.svg)
+
 Use a programmable **linear** DC supply on the LAN, e.g. Siglent SPD1305X
 (30 V / 5 A, linear, LAN + USB, SCPI, ~$328). If the lab already has a
 LAN-programmable linear supply, use that. We need:
@@ -149,6 +153,8 @@ Connect the supply and the Pi through a small Ethernet switch, or put both on
 the lab network.
 
 ### Option B: DIY linear sink (cheapest; same everything else)
+
+![Linear heater current sink schematic](img/heater_current_sink_schematic.svg)
 
 If we"d rather not buy a supply, use the linear sink from
 [`HEATER_AND_CURRENT_DRIVER.md`](HEATER_AND_CURRENT_DRIVER.md) §3 with

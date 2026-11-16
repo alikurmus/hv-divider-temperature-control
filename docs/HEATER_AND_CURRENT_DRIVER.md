@@ -58,6 +58,8 @@ about 0.4–0.6 A for 3–7 W.
 
 ### Phase 1 heater (order now)
 
+![The heater resistors: part, mounting and placement](img/heater_resistors.svg)
+
 Use 2 × 10 Ω, 25 W aluminum-housed wirewound resistors in series (20 Ω), for
 example:
 
@@ -93,6 +95,10 @@ heat needs to go. A silicone-rubber heater is the more rugged equivalent.
 ## 3. Current driver: linear low-side current sink
 
 ### Schematic (reference design)
+
+![Linear heater current sink schematic](img/heater_current_sink_schematic.svg)
+
+The same circuit in text form:
 
 ```text
 +24 V ──F1 3 A T──┬──────────────────────────────► isolated 24→5 V DC-DC ──► Raspberry Pi
